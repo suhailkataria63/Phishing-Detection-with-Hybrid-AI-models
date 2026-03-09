@@ -1,0 +1,22 @@
+=== URL Model v1 (Option 1: engineered features) ===
+Dataset: data/processed/dataset_v1.csv
+Train size: 200022 | Test size: 50006
+ROC-AUC: 0.9892
+PR-AUC (Average Precision): 0.9763
+
+Confusion Matrix (rows=true, cols=pred):
+[[38861  1136]
+ [  648  9361]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0     0.9836    0.9716    0.9776     39997
+           1     0.8918    0.9353    0.9130     10009
+
+    accuracy                         0.9643     50006
+   macro avg     0.9377    0.9534    0.9453     50006
+weighted avg     0.9652    0.9643    0.9646     50006
+
+
+Top Features (by permutation importance) will be added in v1.1 if needed.
