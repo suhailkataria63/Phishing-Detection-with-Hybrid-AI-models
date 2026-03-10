@@ -1,30 +1,44 @@
-# Python
+# OS/editor noise
+.DS_Store
+.ipynb_checkpoints/
+
+# Python cache/logs
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.log
 
-# Virtual environments
+# Virtual environments (root + nested)
 .venv/
 venv/
+env/
+ENV/
+**/.venv/
+**/venv/
+**/env/
 
-# Node
+# Node modules (root + nested)
 node_modules/
+**/node_modules/
 
-# OS files
-.DS_Store
+# Build artifacts
+.next/
+**/.next/
 
-# Data
-data/processed/
-data/raw/
-data/interim/
-
-# Models
-models/
-
-# Environment variables
+# Environment files
 .env
+.env.*
+!.env.example
 
-# Notebook checkpoints
-.ipynb_checkpoints/
+# Datasets: keep directories with placeholders only
+data/raw/*
+data/processed/*
+data/interim/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/interim/.gitkeep
+
+# Model artifacts: keep placeholder only
+models/*
+!models/.gitkeep
