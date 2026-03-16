@@ -2,34 +2,17 @@ import re
 
 from .url_model import URLModelV1, normalize_url_for_model
 from .url_model_v2 import URLModelV2Ngrams
-from ..utils.domain_utils import extract_registrable_domain
+from ..utils.domain_utils import (
+    TRUST_EXACT,
+    TRUSTED_HOST_SUFFIXES,
+    classify_trusted_domain,
+    detect_typosquat_against_trusted,
+    host_matches_trusted,
+)
 from ..utils.url_utils import extract_hostname, safe_parse_url
 
 
 # ---- Guardrails (rules-first hybrid AI) ----
-
-TRUSTED_HOST_SUFFIXES = (
-    "python.org",
-    "pypi.org",
-    "github.com",
-    "gitlab.com",
-    "microsoft.com",
-    "microsoftonline.com",
-    "google.com",
-    "accounts.google.com",
-    "youtube.com",
-    "wikipedia.org",
-    "mozilla.org",
-    "developer.mozilla.org",
-    "linkedin.com",
-    "amazon.com",
-    "amazon.in",
-    "yahoo.com",
-    "paypal.com",
-    "account.live.com", 
-    "apple.com",
-    "icloud.com"
-)
 
 BENIGN_PATH_HINTS = (
     "/docs",
@@ -45,62 +28,6 @@ BENIGN_PATH_HINTS = (
 )
 
 BENIGN_EXT_RE = re.compile(r"\.(html?|pdf|md|txt)$", re.IGNORECASE)
-
-
-def _host_matches_trusted(host: str) -> bool:
-    if not host:
-        return False
-    h = host.lower()
-    return any(h == s or h.endswith("." + s) for s in TRUSTED_HOST_SUFFIXES)
-
-def _levenshtein(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        cur = [i]
-        for j, cb in enumerate(b, start=1):
-            ins = cur[j - 1] + 1
-            dele = prev[j] + 1
-            sub = prev[j - 1] + (0 if ca == cb else 1)
-            cur.append(min(ins, dele, sub))
-        prev = cur
-    return prev[-1]
-
-
-def _typosquat_against_trusted(host: str):
-    """
-    Returns (is_typosquat, info_dict or None)
-    """
-    if not host:
-        return False, None
-
-    reg = extract_registrable_domain(host.lower())
-
-    # Compare against trusted registrable domains (python.org, google.com, etc.)
-    trusted_regs = set(extract_registrable_domain(s) for s in TRUSTED_HOST_SUFFIXES)
-
-    best = None
-    best_d = 10**9
-    for t in trusted_regs:
-        if reg == t:
-            continue
-        d = _levenshtein(reg, t)
-        if d < best_d:
-            best_d = d
-            best = t
-
-    # Distance 1 is the sweet spot for "google.com" vs "googie.com"
-    if best is not None and best_d <= 1:
-        return True, {"host": host, "registrable": reg, "closest_trusted": best, "distance": best_d}
-
-    return False, None
-
 
 def _looks_like_docs_path(path: str) -> bool:
     if not path:
@@ -139,7 +66,8 @@ class HybridURLModel:
         host = extract_hostname(normalized)
         path = p.path or ""
 
-        is_trusted = _host_matches_trusted(host)
+        trust_kind = classify_trusted_domain(host, TRUSTED_HOST_SUFFIXES)
+        is_trusted = host_matches_trusted(host, TRUSTED_HOST_SUFFIXES)
         looks_docs = _looks_like_docs_path(path)
 
         # ---- v1 prediction ----
@@ -173,16 +101,21 @@ class HybridURLModel:
             if enable_explain:
                 reasons.insert(0, {
                     "feature": "trusted_docs_guard",
-                    "value": {"host": host, "docs_like": True},
+                    "value": {"host": host, "docs_like": True, "trust_kind": trust_kind},
                     "note": "Trusted documentation-style URL; reduced string-pattern model influence to avoid false positives.",
                 })
         elif is_trusted:
             w1, w2 = 0.75, 0.25
+            trust_note = (
+                "Exact trusted brand domain detected; reduced string-pattern model influence."
+                if trust_kind == TRUST_EXACT
+                else "Trusted domain ecosystem detected; reduced string-pattern model influence."
+            )
             if enable_explain:
                 reasons.insert(0, {
                     "feature": "trusted_domain_guard",
-                    "value": host,
-                    "note": "Trusted domain detected; reduced string-pattern model influence.",
+                    "value": {"host": host, "trust_kind": trust_kind},
+                    "note": trust_note,
                 })
 
         # ---- Fusion score ----
@@ -240,7 +173,7 @@ class HybridURLModel:
                         "value": round(v2_score, 4),
                         "note": "String-pattern model sees moderately suspicious URL character patterns.",
                     })
-        is_typosquat, typo_info = _typosquat_against_trusted(host)
+        is_typosquat, typo_info = detect_typosquat_against_trusted(host, TRUSTED_HOST_SUFFIXES)
 
         if is_typosquat:
             if enable_explain:
@@ -280,6 +213,7 @@ class HybridURLModel:
                 "v2_score": v2_score,
                 "weights_used": {"v1": w1, "v2": w2},
                 "is_trusted": is_trusted,
+                "trust_kind": trust_kind,
                 "looks_docs": looks_docs,
                 "has_hard_cue": has_hard_cue,
                 "v1_engine": out_v1.get("meta", {}).get("engine", "url_model_v1"),
