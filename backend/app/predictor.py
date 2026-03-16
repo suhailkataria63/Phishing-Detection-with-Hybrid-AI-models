@@ -1,7 +1,7 @@
-import re
 import math
-from urllib.parse import urlparse
 from typing import List, Tuple, Dict, Any
+from .utils.domain_utils import extract_subdomain
+from .utils.url_utils import extract_hostname, is_ip_host, normalize_url, safe_parse_url
 
 SUSPICIOUS_KEYWORDS = [
     "login", "verify", "secure", "update", "account", "password",
@@ -23,40 +23,34 @@ def shannon_entropy(s: str) -> float:
         ent -= p * math.log2(p)
     return ent
 
-def has_ip_hostname(hostname: str) -> bool:
-    # simplistic IPv4 check
-    return bool(re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", hostname or ""))
-
 def count_subdomains(hostname: str) -> int:
-    if not hostname:
+    subdomain = extract_subdomain(hostname)
+    if not subdomain:
         return 0
-    parts = hostname.split(".")
-    return max(0, len(parts) - 2)
+    return len([label for label in subdomain.split(".") if label])
 
 def extract_basic_signals(url: str) -> Dict[str, Any]:
-    u = url.strip()
-    if not re.match(r"^[a-zA-Z]+://", u):
-        u = "http://" + u  # normalize
-    parsed = urlparse(u)
+    normalized = normalize_url(url)
+    parsed = safe_parse_url(normalized)
 
-    hostname = (parsed.hostname or "").lower()
+    hostname = extract_hostname(normalized)
     path = parsed.path or ""
     query = parsed.query or ""
     full = (hostname + path + "?" + query).lower()
 
     signals = {
-        "normalized_url": parsed.geturl(),
+        "normalized_url": normalized,
         "scheme": parsed.scheme,
         "hostname": hostname,
-        "url_length": len(parsed.geturl()),
+        "url_length": len(normalized),
         "host_length": len(hostname),
         "dot_count": hostname.count("."),
         "subdomain_depth": count_subdomains(hostname),
-        "has_ip": has_ip_hostname(hostname),
-        "has_at": "@" in parsed.geturl(),
-        "has_double_slash": parsed.geturl().count("//") > 1,
-        "digit_ratio": (sum(ch.isdigit() for ch in parsed.geturl()) / max(1, len(parsed.geturl()))),
-        "entropy": shannon_entropy(parsed.geturl()),
+        "has_ip": is_ip_host(hostname),
+        "has_at": "@" in normalized,
+        "has_double_slash": normalized.count("//") > 1,
+        "digit_ratio": (sum(ch.isdigit() for ch in normalized) / max(1, len(normalized))),
+        "entropy": shannon_entropy(normalized),
         "is_shortener": hostname in SHORTENERS,
         "keyword_hits": [k for k in SUSPICIOUS_KEYWORDS if k in full],
         "keyword_count": sum(1 for k in SUSPICIOUS_KEYWORDS if k in full),

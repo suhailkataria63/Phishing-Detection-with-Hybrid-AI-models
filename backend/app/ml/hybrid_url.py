@@ -1,8 +1,9 @@
 import re
-from urllib.parse import urlparse
 
 from .url_model import URLModelV1, normalize_url_for_model
 from .url_model_v2 import URLModelV2Ngrams
+from ..utils.domain_utils import extract_registrable_domain
+from ..utils.url_utils import extract_hostname, safe_parse_url
 
 
 # ---- Guardrails (rules-first hybrid AI) ----
@@ -72,17 +73,6 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _registrable_domain(host: str) -> str:
-    """
-    Very small heuristic: take last 2 labels (example: docs.python.org -> python.org).
-    Not perfect for co.uk etc, but good enough for this project.
-    """
-    parts = [p for p in host.split(".") if p]
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return host
-
-
 def _typosquat_against_trusted(host: str):
     """
     Returns (is_typosquat, info_dict or None)
@@ -90,10 +80,10 @@ def _typosquat_against_trusted(host: str):
     if not host:
         return False, None
 
-    reg = _registrable_domain(host.lower())
+    reg = extract_registrable_domain(host.lower())
 
     # Compare against trusted registrable domains (python.org, google.com, etc.)
-    trusted_regs = set(_registrable_domain(s) for s in TRUSTED_HOST_SUFFIXES)
+    trusted_regs = set(extract_registrable_domain(s) for s in TRUSTED_HOST_SUFFIXES)
 
     best = None
     best_d = 10**9
@@ -145,11 +135,8 @@ class HybridURLModel:
 
     def predict(self, url: str, enable_explain: bool = True):
         normalized = normalize_url_for_model(url)
-        p = urlparse(normalized)
-
-        host = (p.netloc or "").lower()
-        if ":" in host:
-            host = host.split(":")[0]
+        p = safe_parse_url(normalized)
+        host = extract_hostname(normalized)
         path = p.path or ""
 
         is_trusted = _host_matches_trusted(host)

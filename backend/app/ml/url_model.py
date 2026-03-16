@@ -1,11 +1,10 @@
 import json
 import math
-import re
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, unquote
 
 import joblib
 import pandas as pd
+from ..utils.url_utils import extract_hostname, is_ip_host, normalize_url, safe_parse_url
 
 
 # Paths
@@ -15,54 +14,14 @@ PROJECT_ROOT = BACKEND_ROOT.parent                       # .../phish-detector
 MODEL_PATH = PROJECT_ROOT / "models" / "url_model_v1_calibrated.joblib"
 SCHEMA_PATH = PROJECT_ROOT / "models" / "url_feature_schema_v1.json"
 
-IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
-SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://")
-
 
 def normalize_url_for_model(raw: str) -> str:
     """
-    Normalize user input into a stable URL form so the feature extractor is consistent.
-    - If no scheme, assume https://
-    - Lowercase hostname
-    - Strip leading www.
-    - Upgrade http->https (stability; most legit sites redirect anyway)
-    - Ensure path at least "/"
+    Backwards-compatible alias used by the model stack.
+
+    Normalization behavior is centralized in app.utils.url_utils.normalize_url.
     """
-    s = (raw or "").strip()
-    s = unquote(s)
-
-    if not SCHEME_RE.match(s):
-        s = "https://" + s
-
-    p = urlparse(s)
-
-    scheme = (p.scheme or "https").lower()
-    netloc = (p.netloc or "").lower()
-
-    # If still no netloc (rare odd inputs), treat path as host
-    if not netloc and p.path:
-        p2 = urlparse("https://" + p.path)
-        scheme = (p2.scheme or "https").lower()
-        netloc = (p2.netloc or "").lower()
-        p = p2
-
-    # strip default ports
-    if netloc.endswith(":80"):
-        netloc = netloc[:-3]
-    if netloc.endswith(":443"):
-        netloc = netloc[:-4]
-
-    # strip leading www.
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-
-    # upgrade http -> https for stability
-    if scheme == "http":
-        scheme = "https"
-
-    path = p.path if p.path else "/"
-
-    return urlunparse((scheme, netloc, path, "", p.query or "", ""))
+    return normalize_url(raw)
 
 
 def shannon_entropy(s: str) -> float:
@@ -77,19 +36,6 @@ def shannon_entropy(s: str) -> float:
         p = c / n
         ent -= p * math.log2(p)
     return float(ent)
-
-
-def is_ipv4_host(host: str) -> int:
-    if not host:
-        return 0
-    if not IPV4_RE.match(host):
-        return 0
-    # validate octets <= 255
-    parts = host.split(".")
-    try:
-        return 1 if all(0 <= int(x) <= 255 for x in parts) else 0
-    except ValueError:
-        return 0
 
 
 class URLModelV1:
@@ -143,11 +89,8 @@ class URLModelV1:
           - extra debug fields prefixed with '_' (for explanations only)
         """
         url = normalized_url
-        p = urlparse(url)
-
-        host = (p.netloc or "").lower()
-        if ":" in host:
-            host = host.split(":")[0]
+        p = safe_parse_url(url)
+        host = extract_hostname(url)
 
         path = p.path or ""
         query = p.query or ""
@@ -183,7 +126,7 @@ class URLModelV1:
         has_http_in_path = 1 if ("http" in (path.lower() + query.lower())) else 0
         has_double_slash_in_path = 1 if ("//" in (path + query)) else 0
 
-        has_ip_host = is_ipv4_host(host)
+        has_ip_host = 1 if is_ip_host(host) else 0
 
         # TLD
         tld = ""
