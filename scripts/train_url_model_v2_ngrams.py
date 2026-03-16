@@ -1,4 +1,10 @@
+import os
 from pathlib import Path
+
+# Prevent noisy loky physical-core detection warnings on macOS environments.
+if not os.environ.get("LOKY_MAX_CPU_COUNT"):
+    logical = os.cpu_count() or 1
+    os.environ["LOKY_MAX_CPU_COUNT"] = str(max(1, logical - 1))
 
 import joblib
 import pandas as pd
@@ -34,7 +40,6 @@ def main():
 
     clf = LogisticRegression(
         max_iter=2000,
-        n_jobs=-1,
         class_weight="balanced",
     )
 
