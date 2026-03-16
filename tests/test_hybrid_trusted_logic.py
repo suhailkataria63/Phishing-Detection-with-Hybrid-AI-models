@@ -37,6 +37,8 @@ def test_trusted_regression_urls_not_marked_fake_brand(hybrid_model, url, expect
     assert out["meta"]["is_trusted"] is True
     assert out["meta"]["trust_kind"] == expected_trust_kind
     assert "fake_brand_domain" not in reason_features
+    if expected_trust_kind == TRUST_EXACT:
+        assert "trusted_exact_domain_exemption" in reason_features
 
 
 def test_typosquat_paypa1_is_untrusted_and_flagged_fake_brand(hybrid_model):
@@ -46,3 +48,14 @@ def test_typosquat_paypa1_is_untrusted_and_flagged_fake_brand(hybrid_model):
     assert out["meta"]["is_trusted"] is False
     assert out["meta"]["trust_kind"] == TRUST_UNTRUSTED
     assert "fake_brand_domain" in reason_features
+
+
+def test_confusable_punycode_lookalike_is_untrusted_and_flagged(hybrid_model):
+    out = hybrid_model.predict("https://xn--80ak6aa92e.com/security", enable_explain=True)
+    fake_brand_reason = next(r for r in out["reasons"] if r.get("feature") == "fake_brand_domain")
+
+    assert out["meta"]["is_trusted"] is False
+    assert out["meta"]["trust_kind"] == TRUST_UNTRUSTED
+    assert out["label"] == "phishing"
+    assert fake_brand_reason["value"]["match_type"] == "confusable_skeleton"
+    assert "confusable/homoglyph" in fake_brand_reason["note"].lower()

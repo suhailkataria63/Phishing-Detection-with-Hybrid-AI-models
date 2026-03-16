@@ -14,7 +14,11 @@ from app.utils.domain_utils import (
     TRUST_EXACT,
     TRUST_UNTRUSTED,
     classify_trusted_domain,
+    confusable_domain_skeleton,
     detect_typosquat_against_trusted,
+    find_confusable_match_against_trusted,
+    normalize_unicode_domain,
+    safe_decode_idn_host,
 )
 
 
@@ -98,3 +102,39 @@ def test_simple_typosquat_is_flagged():
     assert is_typosquat is True
     assert info is not None
     assert info["closest_trusted"] == "paypal.com"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_closest"),
+    [
+        ("https://googIe.com/security", "google.com"),
+        ("https://paypaI.com/security", "paypal.com"),
+    ],
+)
+def test_ascii_lookalikes_are_still_caught_by_levenshtein(url, expected_closest):
+    is_typosquat, info = detect_typosquat_against_trusted(url)
+    assert is_typosquat is True
+    assert info is not None
+    assert info["match_type"] == "levenshtein"
+    assert info["closest_trusted"] == expected_closest
+
+
+def test_idn_confusable_skeleton_and_match():
+    url = "https://xn--80ak6aa92e.com/security"  # punycode for a confusable "apple.com" lookalike
+    decoded = safe_decode_idn_host(url)
+    skeleton = confusable_domain_skeleton(url)
+    is_match, info = find_confusable_match_against_trusted(url)
+
+    assert decoded == "аррӏе.com"
+    assert normalize_unicode_domain(decoded) == "аррӏе.com"
+    assert skeleton == "apple.com"
+    assert is_match is True
+    assert info is not None
+    assert info["match_type"] == "confusable_skeleton"
+    assert info["closest_trusted"] == "apple.com"
+
+
+def test_confusable_detection_respects_trusted_exemption():
+    is_typosquat, info = detect_typosquat_against_trusted("https://paypal.com/security")
+    assert is_typosquat is False
+    assert info is None

@@ -1,4 +1,6 @@
-"""Utilities for domain extraction, trust classification, and typosquat checks."""
+"""Utilities for domain extraction, trust classification, and lookalike detection."""
+
+import unicodedata
 
 from .url_utils import extract_hostname, is_ip_host
 
@@ -28,6 +30,26 @@ TRUSTED_HOST_SUFFIXES = (
     "apple.com",
     "icloud.com",
 )
+
+# Lightweight confusable map. Intentionally small/high-signal for TG-3.
+CONFUSABLE_CHAR_MAP = {
+    # Cyrillic
+    "а": "a",
+    "е": "e",
+    "о": "o",
+    "р": "p",
+    "с": "c",
+    "у": "y",
+    "х": "x",
+    "і": "i",
+    "ј": "j",
+    "ӏ": "l",
+    # Greek
+    "ο": "o",
+    "ρ": "p",
+    "ν": "v",
+    "χ": "x",
+}
 
 
 def _coerce_host(url_or_host: str) -> str:
@@ -64,6 +86,61 @@ def extract_subdomain(url_or_host: str) -> str:
     if len(parts) <= 2:
         return ""
     return ".".join(parts[:-2])
+
+
+def normalize_unicode_domain(url_or_host: str) -> str:
+    """
+    Apply unicode normalization for safer confusable comparison.
+
+    NFKC + casefold is used to reduce representation variance.
+    """
+    host = _coerce_host(url_or_host)
+    if not host:
+        return ""
+    return unicodedata.normalize("NFKC", host).casefold()
+
+
+def safe_decode_idn_host(url_or_host: str) -> str:
+    """
+    Safely decode IDN/punycode labels when possible.
+
+    Invalid labels are preserved as-is to avoid exceptions.
+    """
+    host = _coerce_host(url_or_host)
+    if not host:
+        return ""
+
+    decoded = []
+    for label in host.split("."):
+        if not label:
+            continue
+        if label.startswith("xn--"):
+            try:
+                decoded.append(label.encode("ascii").decode("idna"))
+                continue
+            except Exception:
+                pass
+        decoded.append(label)
+    return ".".join(decoded)
+
+
+def confusable_domain_skeleton(url_or_host: str) -> str:
+    """
+    Build a lightweight confusable/skeleton domain representation.
+
+    Steps:
+    - safe IDN decode
+    - unicode NFKC + casefold
+    - map selected confusable characters to ASCII lookalikes
+    """
+    normalized = normalize_unicode_domain(safe_decode_idn_host(url_or_host))
+    if not normalized:
+        return ""
+
+    chars = []
+    for ch in normalized:
+        chars.append(CONFUSABLE_CHAR_MAP.get(ch, ch))
+    return "".join(chars)
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -120,12 +197,44 @@ def host_matches_trusted(url_or_host: str, trusted_host_suffixes=TRUSTED_HOST_SU
     return classify_trusted_domain(url_or_host, trusted_host_suffixes) != TRUST_UNTRUSTED
 
 
+def find_confusable_match_against_trusted(url_or_host: str, trusted_host_suffixes=TRUSTED_HOST_SUFFIXES):
+    """
+    Compare candidate domain skeleton against trusted registrable skeletons.
+
+    Returns tuple: (is_confusable_match, info_dict_or_none)
+    """
+    host = _coerce_host(url_or_host)
+    if not host or is_ip_host(host):
+        return False, None
+
+    reg = extract_registrable_domain(host)
+    reg_skeleton = confusable_domain_skeleton(reg)
+    if not reg_skeleton:
+        return False, None
+
+    trusted_regs = _trusted_registrable_set(trusted_host_suffixes)
+    for trusted_reg in trusted_regs:
+        trusted_skeleton = confusable_domain_skeleton(trusted_reg)
+        if reg_skeleton == trusted_skeleton and reg != trusted_reg:
+            return True, {
+                "host": host,
+                "registrable": reg,
+                "closest_trusted": trusted_reg,
+                "match_type": "confusable_skeleton",
+                "candidate_skeleton": reg_skeleton,
+                "trusted_skeleton": trusted_skeleton,
+            }
+    return False, None
+
+
 def detect_typosquat_against_trusted(url_or_host: str, trusted_host_suffixes=TRUSTED_HOST_SUFFIXES):
     """
-    Detect simple distance-1 typosquat against trusted registrable domains.
+    Detect trusted-brand lookalikes via:
+    - ASCII distance-1 typosquat check
+    - confusable/homoglyph skeleton comparison
 
     Exact trusted registrable domains and trusted ecosystem hosts are explicitly excluded.
-    Returns tuple: (is_typosquat, info_dict_or_none).
+    Returns tuple: (is_typosquat_or_lookalike, info_dict_or_none).
     """
     host = _coerce_host(url_or_host)
     if not host or is_ip_host(host):
@@ -150,13 +259,24 @@ def detect_typosquat_against_trusted(url_or_host: str, trusted_host_suffixes=TRU
             best_d = d
             best = trusted_reg
 
+    # ASCII typosquat signal.
     if best is not None and best_d <= 1:
         return True, {
             "host": host,
             "registrable": reg,
             "closest_trusted": best,
             "distance": best_d,
+            "match_type": "levenshtein",
             "trust_kind": trust_kind,
         }
+
+    # Confusable/homoglyph signal.
+    confusable_hit, confusable_info = find_confusable_match_against_trusted(
+        host, trusted_host_suffixes
+    )
+    if confusable_hit:
+        info = dict(confusable_info or {})
+        info["trust_kind"] = trust_kind
+        return True, info
 
     return False, None

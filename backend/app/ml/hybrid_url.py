@@ -117,6 +117,12 @@ class HybridURLModel:
                     "value": {"host": host, "trust_kind": trust_kind},
                     "note": trust_note,
                 })
+                if trust_kind == TRUST_EXACT:
+                    reasons.insert(0, {
+                        "feature": "trusted_exact_domain_exemption",
+                        "value": {"host": host, "exemption": "lookalike_checks"},
+                        "note": "Exact trusted registrable domain; exempt from fake-brand lookalike flagging.",
+                    })
 
         # ---- Fusion score ----
         final_score = (w1 * v1_score) + (w2 * v2_score)
@@ -176,11 +182,16 @@ class HybridURLModel:
         is_typosquat, typo_info = detect_typosquat_against_trusted(host, TRUSTED_HOST_SUFFIXES)
 
         if is_typosquat:
+            match_type = (typo_info or {}).get("match_type", "unknown")
+            if match_type == "confusable_skeleton":
+                typo_note = "Domain skeleton matches a trusted brand via confusable/homoglyph normalization."
+            else:
+                typo_note = "Domain is a near-match to a trusted brand (typosquat/lookalike)."
             if enable_explain:
                 reasons.insert(0, {
                     "feature": "fake_brand_domain",
                     "value": typo_info,
-                    "note": "Domain is a near-match to a trusted brand (typosquat/lookalike).",
+                    "note": typo_note,
                 })
         if is_typosquat and not is_trusted:
             label = "phishing"
