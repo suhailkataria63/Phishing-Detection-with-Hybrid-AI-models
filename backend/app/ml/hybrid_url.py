@@ -9,7 +9,7 @@ from ..utils.domain_utils import (
     detect_typosquat_against_trusted,
     host_matches_trusted,
 )
-from ..utils.url_utils import extract_hostname, safe_parse_url
+from ..utils.url_utils import extract_hostname, is_ip_host, safe_parse_url
 
 
 # ---- Guardrails (rules-first hybrid AI) ----
@@ -28,6 +28,45 @@ BENIGN_PATH_HINTS = (
 )
 
 BENIGN_EXT_RE = re.compile(r"\.(html?|pdf|md|txt)$", re.IGNORECASE)
+REDIRECT_VALUE_RE = re.compile(
+    r"(?:^|[?&])(?:redirect|redir|url|next|return|returnurl|continue|dest|destination|to)="
+    r"(?:https?%3a%2f%2f|https?://)",
+    re.IGNORECASE,
+)
+
+SENSITIVE_PATH_HINTS = (
+    "/login",
+    "/signin",
+    "/auth",
+    "/verify",
+    "/account",
+    "/security",
+    "/reset",
+    "/password",
+    "/otp",
+    "/admin",
+)
+
+LURE_KEYWORDS = {
+    "login",
+    "verify",
+    "secure",
+    "update",
+    "account",
+    "password",
+    "signin",
+    "confirm",
+    "bank",
+    "wallet",
+    "otp",
+    "reset",
+    "gift",
+    "card",
+    "free",
+    "now",
+    "urgent",
+    "support",
+}
 
 def _looks_like_docs_path(path: str) -> bool:
     if not path:
@@ -40,6 +79,35 @@ def _looks_like_docs_path(path: str) -> bool:
     if "/library/" in p or "/3/" in p:
         return True
     return False
+
+
+def _is_sensitive_path(path: str) -> bool:
+    if not path:
+        return False
+    p = path.lower()
+    return any(h in p for h in SENSITIVE_PATH_HINTS)
+
+
+def _has_embedded_redirect_target(query: str) -> bool:
+    if not query:
+        return False
+    q = query.lower()
+    return bool(REDIRECT_VALUE_RE.search("?" + q))
+
+
+def _lure_keyword_count(host: str, path: str, query: str) -> int:
+    hay = f"{host} {path} {query}".lower()
+    return sum(1 for k in LURE_KEYWORDS if k in hay)
+
+
+def _has_lure_lexical_pattern(host: str, path: str, query: str) -> bool:
+    """
+    Lightweight lexical lure detector for untrusted domains.
+    Keeps threshold intentionally conservative to reduce false positives.
+    """
+    keyword_count = _lure_keyword_count(host, path, query)
+    host_hyphens = host.count("-")
+    return keyword_count >= 3 or (keyword_count >= 2 and host_hyphens >= 2)
 
 
 class HybridURLModel:
@@ -65,6 +133,7 @@ class HybridURLModel:
         p = safe_parse_url(normalized)
         host = extract_hostname(normalized)
         path = p.path or ""
+        query = p.query or ""
 
         trust_kind = classify_trusted_domain(host, TRUSTED_HOST_SUFFIXES)
         is_trusted = host_matches_trusted(host, TRUSTED_HOST_SUFFIXES)
@@ -196,6 +265,46 @@ class HybridURLModel:
         if is_typosquat and not is_trusted:
             label = "phishing"
             final_score = max(final_score, 0.95)
+
+        # ---- TG-4.5: targeted suspicious-pattern hardening (untrusted only) ----
+        if not is_trusted:
+            ip_sensitive = False
+            if is_ip_host(host):
+                ip_sensitive = _is_sensitive_path(path)
+
+            if ip_sensitive:
+                label = "phishing"
+                final_score = max(final_score, 0.88)
+                if enable_explain:
+                    reasons.insert(0, {
+                        "feature": "ip_sensitive_path",
+                        "value": {"host": host, "path": path},
+                        "note": "IP-host URL with a sensitive auth/admin path is high-risk for phishing.",
+                    })
+
+            if _has_embedded_redirect_target(query):
+                label = "phishing"
+                final_score = max(final_score, 0.78)
+                if enable_explain:
+                    reasons.insert(0, {
+                        "feature": "embedded_redirect_target",
+                        "value": {"query": query[:180]},
+                        "note": "Query contains embedded http/https redirect target often used in phishing redirection flows.",
+                    })
+
+            if _has_lure_lexical_pattern(host, path, query):
+                label = "phishing"
+                final_score = max(final_score, 0.72)
+                if enable_explain:
+                    reasons.insert(0, {
+                        "feature": "untrusted_lure_pattern",
+                        "value": {
+                            "host": host,
+                            "lure_keyword_count": _lure_keyword_count(host, path, query),
+                            "host_hyphens": host.count("-"),
+                        },
+                        "note": "Untrusted domain shows lure-style lexical phishing patterns.",
+                    })
 
         if is_trusted and not has_hard_cue:
             # Trusted domains should not be flagged just because of common words like /login or /security

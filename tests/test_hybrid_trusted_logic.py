@@ -59,3 +59,21 @@ def test_confusable_punycode_lookalike_is_untrusted_and_flagged(hybrid_model):
     assert out["label"] == "phishing"
     assert fake_brand_reason["value"]["match_type"] == "confusable_skeleton"
     assert "confusable/homoglyph" in fake_brand_reason["note"].lower()
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_feature"),
+    [
+        ("http://192.168.1.10/login", "ip_sensitive_path"),
+        ("http://10.0.0.5/admin", "ip_sensitive_path"),
+        ("https://example.com/path?a=1&b=2&redirect=http://evil.com", "embedded_redirect_target"),
+    ],
+)
+def test_tg45_suspicious_patterns_are_escalated_for_untrusted_urls(hybrid_model, url, expected_feature):
+    out = hybrid_model.predict(url, enable_explain=True)
+    reason_features = [r.get("feature") for r in out.get("reasons", [])]
+
+    assert out["meta"]["is_trusted"] is False
+    assert out["meta"]["trust_kind"] == TRUST_UNTRUSTED
+    assert out["label"] == "phishing"
+    assert expected_feature in reason_features
