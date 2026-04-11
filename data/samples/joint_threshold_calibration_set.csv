@@ -1,0 +1,13 @@
+case_id,subject,body,sender,urls,expected_joint_label,note
+C001,Your Monthly Statement is Ready,"Dear Customer, your monthly account statement is now available. Access using our official portal.",HDFC Bank <alerts@hdfcbank.com>,https://www.hdfcbank.com/personal/login,legitimate,benign_statement
+C002,Your Order Has Been Shipped,"Good news, your order has been shipped. Track your shipment using the official page.",Amazon India <shipping@amazon.in>,https://www.amazon.in/gp/your-orders,legitimate,benign_shipping
+C003,Payroll Update - Confirm Acknowledgement,"Finance shared revised payroll details. Review and confirm acknowledgement using employee login.",HR Ops <noreply@corp-example.com>,https://company-payroll-review-example.netlify.app/login,phishing,corporate_lure
+C004,Urgent: Verify Your Account,"We detected unusual activity. Verify your identity within 24 hours to avoid suspension.",Security Desk <alert@bank-secure-example.com>,http://secure-account-check-example.com/update,phishing,classic_urgency
+C005,Invoice Available,"Your invoice is ready for review.",Billing <billing@vendor-example.com>,https://docs.vendor-example.com/invoices/2026/apr,legitimate,benign_invoice
+C006,Action Required: Payment Details Change,"Please update vendor payment details before processing next remittance.",CFO Office <ceo@company.com>,https://payments-verification-example.net/update,phishing,bec_payment_change
+C007,Document Shared With You,"A document has been shared. Open attachment and sign in to continue.",Doc Service <notify@docs-service-example.com>,https://docs-auth-example.com/signin,phishing,shared_doc_lure
+C008,Security Bulletin,"For awareness only. No action required.",IT Team <it@trustedcorp.com>,,legitimate,no_urls_notice
+C009,Quick reminder before cutoff,"Kindly re-validate your account now to keep access active.",Support <support@randomhelpdesk.org>,https://randomhelpdesk.org/verify,phishing,credential_lure
+C010,Delivery Delay Notice,"We had a delay. Track shipment in the official dashboard.",Amazon India <shipping@amazon.in>,https://www.amazon.in/gp/your-orders?ref=pe_123,legitimate,benign_shipping_variant
+C011,Banking Alert,"Unusual sign-in attempt noticed. Review session details.",Bank Alerts <alerts@bank-example.com>,https://bank-example.com/security/sessions,legitimate,security_notice_legit
+C012,Final Warning - Account Termination,"Final warning: account termination in 12 hours unless you validate now.",Service Desk <notice@secure-notice-example.net>,http://198.51.100.24/verify,phishing,ip_urgency
