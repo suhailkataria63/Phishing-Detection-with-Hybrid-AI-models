@@ -2,522 +2,473 @@
 
 import { useMemo, useState } from "react";
 
-type DetectMode = "url" | "email" | "joint";
+import { BatchResultsTable } from "@/components/batch/BatchResultsTable";
+import { BatchUploadPanel } from "@/components/batch/BatchUploadPanel";
+import { CaseDetailDrawer } from "@/components/batch/CaseDetailDrawer";
+import { DetectionForm } from "@/components/dashboard/DetectionForm";
+import { ExplanationCard } from "@/components/dashboard/ExplanationCard";
+import { RecommendationCard } from "@/components/dashboard/RecommendationCard";
+import { SignalBreakdownCard } from "@/components/dashboard/SignalBreakdownCard";
+import { SummaryCard } from "@/components/dashboard/SummaryCard";
+import { SectionCard } from "@/components/shared/SectionCard";
+import { detectEmail, detectJoint, detectUrl } from "@/lib/api";
+import { parseCsvToRows, exportRowsToCsv } from "@/lib/csv";
+import {
+  clamp01,
+  normalizeUrlInput,
+  parseUrlList,
+  recommendationFromScore,
+  toUnifiedResult,
+} from "@/lib/format";
+import {
+  BatchAnalyzedRow,
+  BatchInputRow,
+  DetectMode,
+  DetectorInputs,
+  JointResponse,
+  JointStrategy,
+  OperatingMode,
+  UnifiedResult,
+  WorkspaceMode,
+} from "@/lib/types";
 
-type Reason = {
-  feature: string;
-  value: unknown;
-  note: string;
+const DEFAULT_INPUTS: DetectorInputs = {
+  url: "",
+  subject: "",
+  body: "",
+  sender: "",
+  jointUrlsRaw: "",
 };
 
-type UrlResponse = {
-  label: "phishing" | "legitimate";
-  probability: number;
-  url_score: number;
-  reasons: Reason[];
-  meta?: Record<string, unknown>;
-};
-
-type EmailResponse = {
-  label: "phishing" | "legitimate";
-  probability: number;
-  email_score: number;
-  risk_level: "low" | "medium" | "high" | "critical";
-  suggested_action: string;
-  reasons: Reason[];
-  context?: Record<string, unknown>;
-  meta?: Record<string, unknown>;
-};
-
-type UrlAssessment = {
-  url: string;
-  label: "phishing" | "legitimate";
-  score: number;
-  reasons: Reason[];
-};
-
-type JointResponse = {
-  final_label: "phishing" | "legitimate";
-  final_score: number;
-  risk_level: "low" | "medium" | "high" | "critical";
-  email_label: "phishing" | "legitimate";
-  email_score: number;
-  url_score: number;
-  analyzed_url_count: number;
-  risky_url_count: number;
-  extracted_urls: string[];
-  url_results: UrlAssessment[];
-  reasons: Reason[];
-  context?: Record<string, unknown>;
-  meta?: Record<string, unknown>;
-};
-
-function clampPct(x: number) {
-  const v = Math.max(0, Math.min(1, x));
-  return Math.round(v * 100);
+function extractUrlsFromText(text: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s)"'<>]+/gi) || [];
+  return Array.from(new Set(matches));
 }
 
-function normalizeUrlInput(raw: string) {
-  const s = (raw || "").trim();
-  if (!s) return { normalized: "", error: "Please enter a URL." };
+function parseOptionalThreshold(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (Number.isNaN(parsed)) return undefined;
+  return clamp01(parsed);
+}
 
-  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(s);
-  const candidate = hasScheme ? s : `https://${s}`;
+function normalizeBatchInputForMode(mode: DetectMode, row: BatchInputRow): {
+  subject: string;
+  body: string;
+  sender: string;
+  urls: string[];
+  urlSingle: string;
+} {
+  const manualUrls = parseUrlList(row.urlsRaw);
+  const bodyUrls = extractUrlsFromText(row.body);
+  const rowSingle = row.urlSingle ? [row.urlSingle.trim()] : [];
 
-  try {
-    const u = new URL(candidate);
-    if (!u.hostname) {
-      return { normalized: "", error: "Invalid URL (missing hostname)." };
-    }
-    u.hostname = u.hostname.toLowerCase();
-    if (u.port === "80" && u.protocol === "http:") u.port = "";
-    if (u.port === "443" && u.protocol === "https:") u.port = "";
-    if (!u.pathname) u.pathname = "/";
-    return { normalized: u.toString(), error: null };
-  } catch {
-    return { normalized: "", error: "Invalid URL format." };
+  const urls = Array.from(new Set([...rowSingle, ...manualUrls, ...bodyUrls].filter((value) => value.length > 0)));
+  const urlSingle = urls[0] || "";
+
+  if (mode === "url") {
+    return { subject: "", body: "", sender: "", urls, urlSingle };
   }
-}
 
-function parseUrlList(raw: string): string[] {
-  return Array.from(
-    new Set(
-      (raw || "")
-        .split(/[\n,\s]+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length >= 6)
-    )
-  );
-}
-
-function riskChipClasses(label: "phishing" | "legitimate") {
-  return label === "phishing"
-    ? "bg-red-500/15 text-red-300 border border-red-500/20"
-    : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20";
-}
-
-function riskLevelClasses(level: string) {
-  if (level === "critical") return "text-red-300";
-  if (level === "high") return "text-orange-300";
-  if (level === "medium") return "text-amber-300";
-  return "text-emerald-300";
-}
-
-function formatReasonValue(value: unknown): string {
-  if (value === null || value === undefined) return String(value);
-  if (typeof value === "object") {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  }
-  return String(value);
+  return {
+    subject: row.subject,
+    body: row.body,
+    sender: row.sender,
+    urls,
+    urlSingle,
+  };
 }
 
 export default function Home() {
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
-  const [mode, setMode] = useState<DetectMode>("url");
-  const [enableExplain, setEnableExplain] = useState(true);
+  const [workspace, setWorkspace] = useState<WorkspaceMode>("detect");
 
-  const [url, setUrl] = useState("");
+  const [mode, setMode] = useState<DetectMode>("joint");
+  const [inputs, setInputs] = useState<DetectorInputs>(DEFAULT_INPUTS);
+  const [operatingMode, setOperatingMode] = useState<OperatingMode>("balanced");
+  const [jointStrategy, setJointStrategy] = useState<JointStrategy>("optimized");
+  const [enableExplain, setEnableExplain] = useState(true);
   const [normalizedPreview, setNormalizedPreview] = useState<string | null>(null);
 
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
-  const [sender, setSender] = useState("");
-  const [jointUrlsRaw, setJointUrlsRaw] = useState("");
-
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [detectError, setDetectError] = useState<string | null>(null);
+  const [result, setResult] = useState<UnifiedResult | null>(null);
 
-  const [urlResult, setUrlResult] = useState<UrlResponse | null>(null);
-  const [emailResult, setEmailResult] = useState<EmailResponse | null>(null);
-  const [jointResult, setJointResult] = useState<JointResponse | null>(null);
+  const [batchMode, setBatchMode] = useState<DetectMode>("joint");
+  const [batchOperatingMode, setBatchOperatingMode] = useState<OperatingMode>("balanced");
+  const [batchJointStrategy, setBatchJointStrategy] = useState<JointStrategy>("optimized");
+  const [batchThreshold, setBatchThreshold] = useState("");
+  const [batchRows, setBatchRows] = useState<BatchInputRow[]>([]);
+  const [batchResults, setBatchResults] = useState<BatchAnalyzedRow[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = useState<string>("");
+  const [selectedBatchRow, setSelectedBatchRow] = useState<BatchAnalyzedRow | null>(null);
 
-  const activeScore = useMemo(() => {
-    if (mode === "url" && urlResult) return urlResult.probability;
-    if (mode === "email" && emailResult) return emailResult.probability;
-    if (mode === "joint" && jointResult) return jointResult.final_score;
-    return 0;
-  }, [mode, urlResult, emailResult, jointResult]);
+  const cfg = useMemo(() => ({ apiBase: API_BASE, enableExplain }), [API_BASE, enableExplain]);
 
-  const pct = clampPct(activeScore);
+  function updateInput<K extends keyof DetectorInputs>(key: K, value: DetectorInputs[K]) {
+    setInputs((prev) => ({ ...prev, [key]: value }));
+  }
 
-  async function onAnalyze() {
-    setErr(null);
-    setUrlResult(null);
-    setEmailResult(null);
-    setJointResult(null);
-
+  async function runDetection() {
+    setDetectError(null);
+    setResult(null);
+    setNormalizedPreview(null);
     setLoading(true);
+
     try {
       if (mode === "url") {
-        const { normalized, error } = normalizeUrlInput(url);
-        if (error) {
-          setErr(error);
+        const normalized = normalizeUrlInput(inputs.url);
+        if (normalized.error) {
+          setDetectError(normalized.error);
           setLoading(false);
           return;
         }
-        setNormalizedPreview(normalized);
 
-        const res = await fetch(`${API_BASE}/predict`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            url: normalized,
-            enable_context: false,
-            enable_explain: enableExplain,
-          }),
-        });
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`Backend error: ${res.status} ${txt}`);
-        }
-        const data = (await res.json()) as UrlResponse;
-        setUrlResult(data);
+        setNormalizedPreview(normalized.normalized);
+        const response = await detectUrl(cfg, { url: normalized.normalized });
+        setResult(toUnifiedResult("url", response));
       }
 
       if (mode === "email") {
-        if (!subject.trim() && !body.trim()) {
-          setErr("Please provide at least subject or body.");
+        if (!inputs.subject.trim() && !inputs.body.trim()) {
+          setDetectError("Provide at least subject or body for email analysis.");
           setLoading(false);
           return;
         }
 
-        const res = await fetch(`${API_BASE}/detect/email`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            subject,
-            body,
-            sender,
-            threshold: 0.5,
-            enable_explain: enableExplain,
-          }),
+        const response = await detectEmail(cfg, {
+          subject: inputs.subject,
+          body: inputs.body,
+          sender: inputs.sender,
+          operatingMode,
         });
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`Backend error: ${res.status} ${txt}`);
-        }
-        const data = (await res.json()) as EmailResponse;
-        setEmailResult(data);
+        setResult(toUnifiedResult("email", response));
       }
 
       if (mode === "joint") {
-        if (!subject.trim() && !body.trim() && !jointUrlsRaw.trim()) {
-          setErr("Provide email content and/or URLs for joint analysis.");
+        if (!inputs.subject.trim() && !inputs.body.trim() && !inputs.jointUrlsRaw.trim()) {
+          setDetectError("Provide email content and/or URLs for joint analysis.");
           setLoading(false);
           return;
         }
 
-        const manualUrls = parseUrlList(jointUrlsRaw);
-        const res = await fetch(`${API_BASE}/detect/joint`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            subject,
-            body,
-            sender,
-            urls: manualUrls,
-            threshold: 0.5,
-            enable_explain: enableExplain,
-          }),
+        const manualUrls = parseUrlList(inputs.jointUrlsRaw);
+        const response = await detectJoint(cfg, {
+          subject: inputs.subject,
+          body: inputs.body,
+          sender: inputs.sender,
+          urls: manualUrls,
+          operatingMode,
+          strategy: jointStrategy,
         });
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`Backend error: ${res.status} ${txt}`);
-        }
-        const data = (await res.json()) as JointResponse;
-        setJointResult(data);
+        setResult(toUnifiedResult("joint", response));
       }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Something went wrong";
-      setErr(msg);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Analysis failed.";
+      setDetectError(message);
     } finally {
       setLoading(false);
     }
   }
 
-  const primaryLabel =
-    mode === "url"
-      ? urlResult?.label
-      : mode === "email"
-      ? emailResult?.label
-      : jointResult?.final_label;
+  async function handleBatchFile(file: File) {
+    setBatchError(null);
+    try {
+      const text = await file.text();
+      const rows = parseCsvToRows(text);
+      if (rows.length === 0) {
+        setBatchError("No rows detected. Ensure the CSV has a header and at least one data row.");
+        return;
+      }
+      setBatchRows(rows);
+      setBatchResults([]);
+      setSelectedBatchRow(null);
+    } catch {
+      setBatchError("Unable to read CSV file.");
+    }
+  }
+
+  async function analyzeBatch() {
+    if (batchRows.length === 0) {
+      setBatchError("Upload a CSV first.");
+      return;
+    }
+
+    setBatchError(null);
+    setBatchResults([]);
+    setSelectedBatchRow(null);
+    setBatchLoading(true);
+
+    const thresholdOverride = parseOptionalThreshold(batchThreshold);
+    const analyzed: BatchAnalyzedRow[] = [];
+
+    try {
+      for (let idx = 0; idx < batchRows.length; idx += 1) {
+        const row = batchRows[idx];
+        setBatchProgress(`Analyzing row ${idx + 1}/${batchRows.length}`);
+
+        const normalized = normalizeBatchInputForMode(batchMode, row);
+
+        if (batchMode === "url") {
+          if (!normalized.urlSingle) continue;
+          const normalizedUrl = normalizeUrlInput(normalized.urlSingle);
+          if (normalizedUrl.error) continue;
+
+          const output = await detectUrl(cfg, { url: normalizedUrl.normalized });
+          const unified = toUnifiedResult("url", output);
+          const rec = recommendationFromScore(unified.score, unified.riskLevel);
+
+          analyzed.push({
+            rowIndex: row.rowIndex,
+            caseId: row.caseId,
+            mode: "url",
+            label: unified.label,
+            score: unified.score,
+            riskLevel: unified.riskLevel,
+            recommendationCode: rec.code,
+            recommendation: rec.title,
+            explanationSummary: unified.reasons[0]?.note || "No explanation metadata",
+            input: row,
+            output,
+            extractedUrls: [normalizedUrl.normalized],
+          });
+
+          continue;
+        }
+
+        if (batchMode === "email") {
+          if (!normalized.subject.trim() && !normalized.body.trim()) continue;
+          const output = await detectEmail(cfg, {
+            subject: normalized.subject,
+            body: normalized.body,
+            sender: normalized.sender,
+            operatingMode: batchOperatingMode,
+            threshold: thresholdOverride,
+          });
+          const unified = toUnifiedResult("email", output);
+          const rec = recommendationFromScore(unified.score, unified.riskLevel);
+
+          analyzed.push({
+            rowIndex: row.rowIndex,
+            caseId: row.caseId,
+            mode: "email",
+            label: unified.label,
+            score: unified.score,
+            riskLevel: unified.riskLevel,
+            recommendationCode: rec.code,
+            recommendation: rec.title,
+            explanationSummary: unified.reasons[0]?.note || "No explanation metadata",
+            input: row,
+            output,
+            extractedUrls: normalized.urls,
+          });
+
+          continue;
+        }
+
+        if (!normalized.subject.trim() && !normalized.body.trim() && normalized.urls.length === 0) continue;
+
+        const output = await detectJoint(cfg, {
+          subject: normalized.subject,
+          body: normalized.body,
+          sender: normalized.sender,
+          urls: normalized.urls,
+          operatingMode: batchOperatingMode,
+          strategy: batchJointStrategy,
+          threshold: thresholdOverride,
+        });
+        const unified = toUnifiedResult("joint", output);
+        const rec = recommendationFromScore(unified.score, unified.riskLevel);
+
+        analyzed.push({
+          rowIndex: row.rowIndex,
+          caseId: row.caseId,
+          mode: "joint",
+          label: unified.label,
+          score: unified.score,
+          riskLevel: unified.riskLevel,
+          recommendationCode: rec.code,
+          recommendation: rec.title,
+          explanationSummary: unified.reasons[0]?.note || "No explanation metadata",
+          input: row,
+          output,
+          extractedUrls: (output as JointResponse).extracted_urls || normalized.urls,
+        });
+      }
+
+      setBatchResults(analyzed);
+      setBatchProgress(`Completed ${analyzed.length} analyzed rows.`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Batch run failed.";
+      setBatchError(message);
+    } finally {
+      setBatchLoading(false);
+    }
+  }
+
+  function exportBatchCsv() {
+    const headers = [
+      "row_index",
+      "case_id",
+      "mode",
+      "label",
+      "score",
+      "risk_level",
+      "recommendation",
+      "explanation_summary",
+    ];
+
+    const rows = batchResults.map((row) => [
+      String(row.rowIndex),
+      row.caseId,
+      row.mode,
+      row.label,
+      row.score.toFixed(4),
+      row.riskLevel,
+      row.recommendation,
+      row.explanationSummary,
+    ]);
+
+    const csv = exportRowsToCsv(headers, rows);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `batch_results_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const recommendation = result
+    ? recommendationFromScore(result.score, result.riskLevel)
+    : null;
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-slate-950 text-white">
-      <div className="absolute inset-0 -z-10">
-        <div className="absolute top-[-18%] left-[-12%] h-[520px] w-[520px] rounded-full bg-indigo-500/30 blur-[140px]" />
-        <div className="absolute bottom-[-18%] right-[-12%] h-[520px] w-[520px] rounded-full bg-cyan-500/25 blur-[140px]" />
-        <div className="absolute top-[30%] right-[15%] h-[360px] w-[360px] rounded-full bg-fuchsia-500/10 blur-[120px]" />
-      </div>
-
-      <div className="pointer-events-none absolute inset-0 -z-10 opacity-[0.08]">
-        <div className="h-full w-full bg-[linear-gradient(to_right,rgba(255,255,255,0.5)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.5)_1px,transparent_1px)] bg-[size:60px_60px]" />
-      </div>
-
-      <div className="mx-auto max-w-4xl px-6 py-12">
-        <div className="mb-6">
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
-            <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            Backend connected • FastAPI + Next.js
-          </div>
-
-          <h1 className="mt-4 text-3xl font-semibold tracking-tight">Phishing Detection Console</h1>
-          <p className="mt-2 text-slate-300">
-            Analyze URL-only, email-only, or combined email + URL signals in one workflow.
-          </p>
-        </div>
-
-        <div className="rounded-2xl border border-white/10 bg-white/10 p-8 shadow-2xl backdrop-blur-xl">
-          <div className="mb-6 grid grid-cols-1 gap-2 sm:grid-cols-3">
-            {([
-              ["url", "URL Detection"],
-              ["email", "Email Detection"],
-              ["joint", "Joint Detection"],
-            ] as const).map(([key, label]) => {
-              const active = mode === key;
-              return (
-                <button
-                  key={key}
-                  onClick={() => setMode(key)}
-                  className={`rounded-xl border px-4 py-2 text-sm font-semibold transition ${
-                    active
-                      ? "border-indigo-400 bg-indigo-500/20 text-indigo-100"
-                      : "border-white/15 bg-white/5 text-slate-200 hover:bg-white/10"
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-
-          {mode === "url" && (
+    <main className="min-h-screen bg-security text-slate-100">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <header className="mb-6 rounded-2xl border border-white/10 bg-slate-900/70 p-5 backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-200">URL</label>
-              <input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    if (!loading) {
-                      void onAnalyze();
-                    }
-                  }
-                }}
-                placeholder="https://login.example/login"
-                className="mt-2 w-full rounded-xl border border-white/20 bg-white/80 px-4 py-3 text-slate-900 placeholder:text-slate-500 outline-none backdrop-blur-md focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/40"
-              />
-              {normalizedPreview && (
-                <div className="mt-2 text-xs text-slate-300">
-                  Analyzing: <span className="font-mono text-slate-100">{normalizedPreview}</span>
-                </div>
-              )}
+              <p className="text-xs uppercase tracking-[0.18em] text-indigo-300/80">Phish Detector</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight">Phishing Triage Console</h1>
+              <p className="mt-2 text-sm text-slate-400">
+                Unified analyst workspace for URL, email, and joint phishing investigations.
+              </p>
             </div>
-          )}
-
-          {(mode === "email" || mode === "joint") && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-200">Email Subject</label>
-                <input
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  placeholder="Security alert: verify your account"
-                  className="mt-2 w-full rounded-xl border border-white/20 bg-white/80 px-4 py-3 text-slate-900 placeholder:text-slate-500 outline-none backdrop-blur-md focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/40"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-200">Email Body</label>
-                <textarea
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  placeholder="Paste the email body here..."
-                  rows={7}
-                  className="mt-2 w-full rounded-xl border border-white/20 bg-white/80 px-4 py-3 text-slate-900 placeholder:text-slate-500 outline-none backdrop-blur-md focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/40"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-200">Sender (optional)</label>
-                <input
-                  value={sender}
-                  onChange={(e) => setSender(e.target.value)}
-                  placeholder="alerts@example.com"
-                  className="mt-2 w-full rounded-xl border border-white/20 bg-white/80 px-4 py-3 text-slate-900 placeholder:text-slate-500 outline-none backdrop-blur-md focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/40"
-                />
-              </div>
-
-              {mode === "joint" && (
-                <div>
-                  <label className="block text-sm font-medium text-slate-200">URLs (optional, comma/newline separated)</label>
-                  <textarea
-                    value={jointUrlsRaw}
-                    onChange={(e) => setJointUrlsRaw(e.target.value)}
-                    placeholder="https://example.com/reset\nhttp://bit.ly/..."
-                    rows={3}
-                    className="mt-2 w-full rounded-xl border border-white/20 bg-white/80 px-4 py-3 text-slate-900 placeholder:text-slate-500 outline-none backdrop-blur-md focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/40"
-                  />
-                </div>
-              )}
+            <div className="rounded-lg border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-200">
+              API base: <span className="font-mono">{API_BASE}</span>
             </div>
-          )}
-
-          <div className="mt-4 flex items-center gap-3">
-            <input
-              id="explain"
-              type="checkbox"
-              checked={enableExplain}
-              onChange={(e) => setEnableExplain(e.target.checked)}
-              className="h-4 w-4 accent-indigo-500"
-            />
-            <label htmlFor="explain" className="text-sm text-slate-200">
-              Show reasons
-            </label>
           </div>
 
-          <button
-            onClick={onAnalyze}
-            disabled={loading}
-            className="mt-6 w-full rounded-xl bg-indigo-500 py-3 font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? "Analyzing..." : "Analyze"}
-          </button>
+          <div className="mt-5 inline-flex rounded-xl border border-white/10 bg-slate-950/70 p-1">
+            <button
+              type="button"
+              onClick={() => setWorkspace("detect")}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                workspace === "detect" ? "bg-indigo-500/20 text-indigo-100" : "text-slate-300 hover:bg-slate-900"
+              }`}
+            >
+              Detection Workspace
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspace("batch")}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                workspace === "batch" ? "bg-indigo-500/20 text-indigo-100" : "text-slate-300 hover:bg-slate-900"
+              }`}
+            >
+              Batch Analysis
+            </button>
+          </div>
+        </header>
 
-          {err && (
-            <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{err}</div>
-          )}
-        </div>
-
-        {(urlResult || emailResult || jointResult) && (
-          <div className="mt-6 rounded-2xl border border-white/10 bg-white/10 p-8 shadow-2xl backdrop-blur-xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                {primaryLabel && (
-                  <div className={`inline-flex items-center rounded-full px-4 py-1 text-sm font-semibold ${riskChipClasses(primaryLabel)}`}>
-                    {primaryLabel.toUpperCase()}
-                  </div>
-                )}
-                <p className="mt-2 text-sm text-slate-300">Probability score is a confidence estimate (0-100%).</p>
-              </div>
-
-              <div className="text-right">
-                <div className="text-4xl font-semibold">{pct}%</div>
-                <div className="text-xs text-slate-400">risk score</div>
-              </div>
+        {workspace === "detect" ? (
+          <div className="grid gap-6 lg:grid-cols-12">
+            <div className="space-y-6 lg:col-span-5">
+              <SectionCard
+                title="Main Detection Workspace"
+                subtitle="Configure analysis mode, threshold profile, and strategy"
+              >
+                <DetectionForm
+                  mode={mode}
+                  inputs={inputs}
+                  enableExplain={enableExplain}
+                  loading={loading}
+                  operatingMode={operatingMode}
+                  jointStrategy={jointStrategy}
+                  normalizedPreview={normalizedPreview}
+                  error={detectError}
+                  onModeChange={setMode}
+                  onInputChange={updateInput}
+                  onOperatingModeChange={setOperatingMode}
+                  onJointStrategyChange={setJointStrategy}
+                  onEnableExplainChange={setEnableExplain}
+                  onSubmit={runDetection}
+                />
+              </SectionCard>
             </div>
 
-            <div className="mt-4 h-3 w-full overflow-hidden rounded-full border border-white/5 bg-slate-900/70">
-              <div className="h-full bg-white/90" style={{ width: `${pct}%` }} />
+            <div className="space-y-6 lg:col-span-7">
+              {!result ? (
+                <SectionCard title="Awaiting Analysis" subtitle="Run a detection to view score and explanation details">
+                  <div className="rounded-xl border border-dashed border-white/20 bg-slate-950/60 p-6 text-sm text-slate-400">
+                    Use the left panel to submit URL, email, or joint evidence. This panel will show summary, score
+                    breakdown, explanation signals, and analyst recommendation.
+                  </div>
+                </SectionCard>
+              ) : (
+                <>
+                  <SummaryCard result={result} />
+                  <RecommendationCard result={result} />
+                  <SignalBreakdownCard result={result} />
+                  <ExplanationCard result={result} />
+
+                  {recommendation ? (
+                    <SectionCard title="Operational Note" subtitle="Triage context">
+                      <div className="text-sm text-slate-300">
+                        Recommendation class: <span className="font-semibold text-slate-100">{recommendation.code}</span>
+                      </div>
+                    </SectionCard>
+                  ) : null}
+                </>
+              )}
             </div>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <BatchUploadPanel
+              mode={batchMode}
+              operatingMode={batchOperatingMode}
+              strategy={batchJointStrategy}
+              threshold={batchThreshold}
+              loading={batchLoading}
+              rowCount={batchRows.length}
+              onModeChange={setBatchMode}
+              onOperatingModeChange={setBatchOperatingMode}
+              onStrategyChange={setBatchJointStrategy}
+              onThresholdChange={setBatchThreshold}
+              onFileSelect={handleBatchFile}
+              onRun={analyzeBatch}
+            />
 
-            {emailResult && mode === "email" && (
-              <div className="mt-5 grid gap-3 rounded-xl border border-white/10 bg-slate-900/40 p-4 text-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-slate-300">Risk level</span>
-                  <span className={`font-semibold uppercase ${riskLevelClasses(emailResult.risk_level)}`}>
-                    {emailResult.risk_level}
-                  </span>
-                </div>
-                <div className="text-slate-300">Suggested action</div>
-                <div className="text-slate-100">{emailResult.suggested_action}</div>
-              </div>
-            )}
-
-            {jointResult && mode === "joint" && (
-              <div className="mt-5 space-y-4">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-white/10 bg-slate-900/40 p-4">
-                    <div className="text-xs text-slate-400">Email Score</div>
-                    <div className="mt-1 text-xl font-semibold">{clampPct(jointResult.email_score)}%</div>
-                  </div>
-                  <div className="rounded-xl border border-white/10 bg-slate-900/40 p-4">
-                    <div className="text-xs text-slate-400">URL Score (max)</div>
-                    <div className="mt-1 text-xl font-semibold">{clampPct(jointResult.url_score)}%</div>
-                  </div>
-                  <div className="rounded-xl border border-white/10 bg-slate-900/40 p-4">
-                    <div className="text-xs text-slate-400">Risk Level</div>
-                    <div className={`mt-1 text-xl font-semibold uppercase ${riskLevelClasses(jointResult.risk_level)}`}>
-                      {jointResult.risk_level}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-white/10 bg-slate-900/40 p-4 text-sm text-slate-300">
-                  URLs analyzed: <span className="font-semibold text-slate-100">{jointResult.analyzed_url_count}</span>
-                  {" • "}
-                  risky URLs: <span className="font-semibold text-slate-100">{jointResult.risky_url_count}</span>
-                </div>
-
-                {jointResult.extracted_urls?.length > 0 && (
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-200">Extracted URLs</h3>
-                    <ul className="mt-2 space-y-2">
-                      {jointResult.extracted_urls.slice(0, 8).map((u, idx) => (
-                        <li key={`${u}-${idx}`} className="rounded-lg border border-white/10 bg-slate-900/40 p-3 text-xs font-mono text-slate-200">
-                          {u}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {jointResult.url_results?.length > 0 && (
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-200">Per-URL Scores</h3>
-                    <ul className="mt-2 space-y-2">
-                      {jointResult.url_results.slice(0, 6).map((r, idx) => (
-                        <li key={`${r.url}-${idx}`} className="rounded-xl border border-white/10 bg-slate-900/40 p-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="truncate text-xs font-mono text-slate-200">{r.url}</span>
-                            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${riskChipClasses(r.label)}`}>
-                              {r.label.toUpperCase()} {clampPct(r.score)}%
-                            </span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {(mode === "url" ? urlResult?.reasons : mode === "email" ? emailResult?.reasons : jointResult?.reasons)?.length ? (
-              <>
-                <h2 className="mt-6 text-lg font-semibold">Reasons</h2>
-                <ul className="mt-3 space-y-3">
-                  {(mode === "url" ? urlResult?.reasons : mode === "email" ? emailResult?.reasons : jointResult?.reasons)!
-                    .slice(0, 8)
-                    .map((r, idx) => (
-                      <li key={`${r.feature}-${idx}`} className="rounded-xl border border-white/10 bg-slate-900/40 p-4">
-                        <div className="text-sm font-semibold text-slate-100">{r.feature}</div>
-                        <div className="mt-1 text-sm text-slate-300">{r.note}</div>
-                        <div className="mt-2 text-xs text-slate-400">value:</div>
-                        <pre className="mt-1 max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-slate-950/40 p-2 text-xs font-mono text-slate-200">
-                          {formatReasonValue(r.value)}
-                        </pre>
-                      </li>
-                    ))}
-                </ul>
-              </>
+            {batchError ? (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{batchError}</div>
             ) : null}
 
-            <div className="mt-6 text-xs text-slate-400">
-              engine: <span className="text-slate-200">{mode === "url" ? urlResult?.meta?.engine : mode === "email" ? emailResult?.meta?.engine : jointResult?.meta?.engine ?? "unknown"}</span>
-            </div>
+            {batchProgress ? (
+              <div className="rounded-xl border border-white/10 bg-slate-900/70 p-3 text-sm text-slate-300">{batchProgress}</div>
+            ) : null}
+
+            <BatchResultsTable rows={batchResults} onSelectRow={setSelectedBatchRow} onExport={exportBatchCsv} />
           </div>
         )}
-
-        <div className="mt-10 text-center text-xs text-slate-500">
-          Tip: In joint mode, URLs are auto-extracted from email body and combined with email model evidence.
-        </div>
       </div>
+
+      <CaseDetailDrawer row={selectedBatchRow} onClose={() => setSelectedBatchRow(null)} />
     </main>
   );
 }

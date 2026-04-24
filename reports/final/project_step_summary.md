@@ -353,3 +353,20 @@ Scope covered here: TG-1.0 through TG-6.0.
 
 ### Insight
 - A compact launcher layer plus a dedicated `legacy/` folder keeps usability high without visual clutter.
+
+## TG-Frontend Redesign
+### What was done
+- Rebuilt the frontend into a modular analyst dashboard with reusable components for form controls, summaries, explanations, recommendations, and batch workflows.
+- Added a dedicated batch workspace with CSV upload, filtering, sorting, export, and case-detail drawer.
+- Preserved URL/email/joint API flows and exposed operating mode + joint strategy controls in the UI.
+- Improved explanation readability by wrapping long metadata and JSON values.
+
+### Why it was done
+- Existing UI worked functionally but did not match the quality needed for professional demos, analyst workflows, or recruiter-facing presentation.
+
+### Key result
+- Frontend now presents a cohesive SOC-style triage experience while keeping existing backend functionality unchanged.
+- Build and lint pass in the current environment (build validated via webpack path).
+
+### Insight
+- Product polish and trust in security tooling improve significantly when risk outputs are structured into summary, signal, explanation, and action cards rather than raw result dumps.
