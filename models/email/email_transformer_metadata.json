@@ -1,0 +1,45 @@
+{
+  "version": "email_transformer_hybrid_v1",
+  "created_at": "2026-03-27T14:15:39.825644Z",
+  "model_name": "distilbert-base-uncased",
+  "max_length": 256,
+  "batch_size": 16,
+  "epochs": 3,
+  "learning_rate": 2e-05,
+  "device_used": "cpu",
+  "numeric_feature_columns": [
+    "url_count",
+    "has_ip_url",
+    "avg_url_length",
+    "suspicious_tld_count",
+    "shortener_count",
+    "exclamation_count",
+    "digit_ratio",
+    "capital_ratio",
+    "body_length"
+  ],
+  "numeric_fill_medians": {
+    "url_count": 0.0,
+    "has_ip_url": 0.0,
+    "avg_url_length": 0.0,
+    "suspicious_tld_count": 0.0,
+    "shortener_count": 0.0,
+    "exclamation_count": 0.0,
+    "digit_ratio": 0.018041237113402,
+    "capital_ratio": 0.05524574153679345,
+    "body_length": 937.5
+  },
+  "scaler_path": "models/email_transformer_scaler.joblib",
+  "model_path": "models/email_transformer_model.pt",
+  "label_mapping": {
+    "0": "legitimate",
+    "1": "phishing"
+  },
+  "text_build": "subject + [SEP] + body",
+  "thresholds_evaluated": [
+    0.2,
+    0.5,
+    0.8
+  ],
+  "freeze_encoder": true
+}

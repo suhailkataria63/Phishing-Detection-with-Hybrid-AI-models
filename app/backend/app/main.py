@@ -16,6 +16,13 @@ from .schemas import (
 )
 from .ml.email_model import EmailInferenceInput, EmailModel
 from .ml.hybrid_url import HybridURLModel
+from .ml.email_model import (
+    DEFAULT_MODEL_PATH as EMAIL_MODEL_PATH,
+    DEFAULT_META_PATH as EMAIL_META_PATH,
+    DEFAULT_TOKENIZER_PATH as EMAIL_TOKENIZER_PATH,
+)
+from .ml.url_model import MODEL_PATH as URL_V1_MODEL_PATH, SCHEMA_PATH as URL_V1_SCHEMA_PATH
+from .ml.url_model_v2 import V2_PATH as URL_V2_MODEL_PATH
 from .utils.domain_utils import (
     TRUST_UNTRUSTED,
     classify_trusted_domain,
@@ -33,13 +40,19 @@ from .utils.joint_scoring import combine_email_url_scores, risk_level_from_score
 app = FastAPI(title=settings.app_name)
 url_model = HybridURLModel()
 email_model = EmailModel()
+MODEL_LOAD_STATUS = {
+    "url_model_loaded": False,
+    "email_model_loaded": False,
+    "url_model_error": "",
+    "email_model_error": "",
+}
 OPERATING_MODE_THRESHOLDS = {
     "soc": 0.40,
     "balanced": 0.50,
     "high_confidence": 0.60,
 }
 
-origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+origins = settings.resolved_cors_origins
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,29 +65,74 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
+    url_ready = bool(getattr(url_model.v1, "model", None) and getattr(url_model.v2, "model", None))
+    email_ready = email_model.is_ready
+    MODEL_LOAD_STATUS["url_model_loaded"] = url_ready
+    MODEL_LOAD_STATUS["email_model_loaded"] = email_ready
+
     return {
         "status": "ok",
         "service": settings.app_name,
-        "url_model_loaded": bool(getattr(url_model.v1, "model", None) and getattr(url_model.v2, "model", None)),
-        "email_model_ready": email_model.is_ready,
+        "url_model_loaded": url_ready,
+        "email_model_ready": email_ready,
+        "url_model_error": MODEL_LOAD_STATUS.get("url_model_error", ""),
+        "email_model_error": MODEL_LOAD_STATUS.get("email_model_error", ""),
+        "model_paths": {
+            "url_v1_model": str(URL_V1_MODEL_PATH),
+            "url_v1_schema": str(URL_V1_SCHEMA_PATH),
+            "url_v2_model": str(URL_V2_MODEL_PATH),
+            "email_model": str(EMAIL_MODEL_PATH),
+            "email_tokenizer": str(EMAIL_TOKENIZER_PATH),
+            "email_meta": str(EMAIL_META_PATH),
+        },
+        "model_paths_exist": {
+            "url_v1_model": URL_V1_MODEL_PATH.exists(),
+            "url_v1_schema": URL_V1_SCHEMA_PATH.exists(),
+            "url_v2_model": URL_V2_MODEL_PATH.exists(),
+            "email_model": EMAIL_MODEL_PATH.exists(),
+            "email_tokenizer": EMAIL_TOKENIZER_PATH.exists(),
+            "email_meta": EMAIL_META_PATH.exists(),
+        },
     }
 
 
 @app.on_event("startup")
 def startup_event():
-    url_model.load()
-    email_model.load()
+    try:
+        url_model.load()
+        MODEL_LOAD_STATUS["url_model_loaded"] = True
+        MODEL_LOAD_STATUS["url_model_error"] = ""
+    except Exception as exc:
+        MODEL_LOAD_STATUS["url_model_loaded"] = False
+        MODEL_LOAD_STATUS["url_model_error"] = str(exc)
+
+    try:
+        email_model.load()
+        MODEL_LOAD_STATUS["email_model_loaded"] = bool(email_model.is_ready)
+        MODEL_LOAD_STATUS["email_model_error"] = ""
+    except Exception as exc:
+        MODEL_LOAD_STATUS["email_model_loaded"] = False
+        MODEL_LOAD_STATUS["email_model_error"] = str(exc)
+
+
+def _ensure_url_model_ready() -> None:
+    if bool(getattr(url_model.v1, "model", None) and getattr(url_model.v2, "model", None)):
+        return
+    detail = MODEL_LOAD_STATUS.get("url_model_error", "") or "URL model artifacts are missing or failed to load."
+    raise HTTPException(status_code=503, detail=f"URL model unavailable: {detail}")
 
 
 # Legacy URL endpoint (kept intact for backwards compatibility).
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
+    _ensure_url_model_ready()
     return url_model.predict(req.url, enable_explain=req.enable_explain)
 
 
 # New explicit URL endpoint.
 @app.post("/detect/url", response_model=PredictResponse)
 def detect_url(req: PredictRequest):
+    _ensure_url_model_ready()
     return url_model.predict(req.url, enable_explain=req.enable_explain)
 
 

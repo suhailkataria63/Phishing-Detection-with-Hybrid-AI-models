@@ -30,6 +30,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+!**/.env.example
 
 # Datasets: keep directories with placeholders only
 data/raw/*
@@ -42,3 +43,10 @@ data/interim/*
 # Model artifacts: keep placeholder only
 models/*
 !models/.gitkeep
+!models/email/
+!models/email/**
+!models/url/
+!models/url/**
+
+# Keep large experimental checkpoints out of git history
+models/email/email_transformer_model.pt
