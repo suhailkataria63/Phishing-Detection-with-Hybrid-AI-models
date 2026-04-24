@@ -30,6 +30,15 @@ Render config is included in [`render.yaml`](../render.yaml).
 Using very new major versions of NumPy/Pandas/scikit-learn/Transformers/Torch can break
 serialized model artifacts or runtime loading behavior.
 
+Current pinned runtime-critical stack:
+- `numpy==2.4.4`
+- `scikit-learn==1.8.0`
+- `joblib==1.5.3`
+- `pandas==3.0.2`
+
+These are aligned with the URL artifact pickle metadata to avoid
+`BitGenerator` and sklearn unpickle version mismatch errors.
+
 ### Required Render Environment Variables
 - `CORS_ORIGINS`
   - Example: `http://localhost:3000,https://your-frontend.vercel.app`
@@ -122,6 +131,8 @@ curl http://localhost:8000/health
 ## 8) Notes on Model Availability
 `/health` now reports:
 - `url_model_loaded`
+- `url_v1_loaded`
+- `url_v2_loaded`
 - `email_model_ready`
 - model path existence diagnostics
 - model load errors (if artifacts are missing or incompatible)

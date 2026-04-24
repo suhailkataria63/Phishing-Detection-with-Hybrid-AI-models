@@ -45,8 +45,12 @@ email_model = EmailModel()
 logger = logging.getLogger("phish_detector.startup")
 MODEL_LOAD_STATUS = {
     "url_model_loaded": False,
+    "url_v1_loaded": False,
+    "url_v2_loaded": False,
     "email_model_loaded": False,
     "url_model_error": "",
+    "url_v1_error": "",
+    "url_v2_error": "",
     "email_model_error": "",
 }
 
@@ -77,17 +81,27 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    url_ready = bool(getattr(url_model.v1, "model", None) and getattr(url_model.v2, "model", None))
+    v1_ready = bool(getattr(url_model, "v1_loaded", False) and getattr(url_model.v1, "model", None))
+    v2_ready = bool(getattr(url_model, "v2_loaded", False) and getattr(url_model.v2, "model", None))
+    url_ready = bool(v1_ready or v2_ready)
     email_ready = email_model.is_ready
     MODEL_LOAD_STATUS["url_model_loaded"] = url_ready
+    MODEL_LOAD_STATUS["url_v1_loaded"] = bool(v1_ready)
+    MODEL_LOAD_STATUS["url_v2_loaded"] = bool(v2_ready)
+    MODEL_LOAD_STATUS["url_v1_error"] = str(getattr(url_model, "v1_error", ""))
+    MODEL_LOAD_STATUS["url_v2_error"] = str(getattr(url_model, "v2_error", ""))
     MODEL_LOAD_STATUS["email_model_loaded"] = email_ready
 
     return {
         "status": "ok",
         "service": settings.app_name,
         "url_model_loaded": url_ready,
+        "url_v1_loaded": MODEL_LOAD_STATUS.get("url_v1_loaded", False),
+        "url_v2_loaded": MODEL_LOAD_STATUS.get("url_v2_loaded", False),
         "email_model_ready": email_ready,
         "url_model_error": MODEL_LOAD_STATUS.get("url_model_error", ""),
+        "url_v1_error": MODEL_LOAD_STATUS.get("url_v1_error", ""),
+        "url_v2_error": MODEL_LOAD_STATUS.get("url_v2_error", ""),
         "email_model_error": MODEL_LOAD_STATUS.get("email_model_error", ""),
         "model_paths": {name: str(path) for name, path in MODEL_PATHS.items()},
         "model_paths_exist": {name: path.exists() for name, path in MODEL_PATHS.items()},
@@ -106,12 +120,37 @@ def startup_event():
     try:
         logger.info("loading_model name=url_hybrid")
         url_model.load()
-        MODEL_LOAD_STATUS["url_model_loaded"] = True
-        MODEL_LOAD_STATUS["url_model_error"] = ""
-        logger.info("loading_model_success name=url_hybrid")
+        MODEL_LOAD_STATUS["url_v1_loaded"] = bool(getattr(url_model, "v1_loaded", False))
+        MODEL_LOAD_STATUS["url_v2_loaded"] = bool(getattr(url_model, "v2_loaded", False))
+        MODEL_LOAD_STATUS["url_v1_error"] = str(getattr(url_model, "v1_error", ""))
+        MODEL_LOAD_STATUS["url_v2_error"] = str(getattr(url_model, "v2_error", ""))
+        MODEL_LOAD_STATUS["url_model_loaded"] = bool(
+            MODEL_LOAD_STATUS["url_v1_loaded"] or MODEL_LOAD_STATUS["url_v2_loaded"]
+        )
+        MODEL_LOAD_STATUS["url_model_error"] = (
+            ""
+            if MODEL_LOAD_STATUS["url_model_loaded"]
+            else f"v1={MODEL_LOAD_STATUS['url_v1_error'] or 'n/a'}; v2={MODEL_LOAD_STATUS['url_v2_error'] or 'n/a'}"
+        )
+        if MODEL_LOAD_STATUS["url_model_loaded"]:
+            logger.info(
+                "loading_model_success name=url_hybrid v1_loaded=%s v2_loaded=%s",
+                MODEL_LOAD_STATUS["url_v1_loaded"],
+                MODEL_LOAD_STATUS["url_v2_loaded"],
+            )
+        else:
+            logger.warning(
+                "loading_model_failed_all name=url_hybrid v1_error=%s v2_error=%s",
+                MODEL_LOAD_STATUS["url_v1_error"],
+                MODEL_LOAD_STATUS["url_v2_error"],
+            )
     except Exception as exc:
         MODEL_LOAD_STATUS["url_model_loaded"] = False
         MODEL_LOAD_STATUS["url_model_error"] = str(exc)
+        MODEL_LOAD_STATUS["url_v1_loaded"] = bool(getattr(url_model, "v1_loaded", False))
+        MODEL_LOAD_STATUS["url_v2_loaded"] = bool(getattr(url_model, "v2_loaded", False))
+        MODEL_LOAD_STATUS["url_v1_error"] = str(getattr(url_model, "v1_error", ""))
+        MODEL_LOAD_STATUS["url_v2_error"] = str(getattr(url_model, "v2_error", ""))
         logger.exception("loading_model_failed name=url_hybrid error=%s", exc)
 
     try:
@@ -135,9 +174,14 @@ def startup_event():
 
 
 def _ensure_url_model_ready() -> None:
-    if bool(getattr(url_model.v1, "model", None) and getattr(url_model.v2, "model", None)):
+    v1_ready = bool(getattr(url_model, "v1_loaded", False) and getattr(url_model.v1, "model", None))
+    v2_ready = bool(getattr(url_model, "v2_loaded", False) and getattr(url_model.v2, "model", None))
+    if bool(v1_ready or v2_ready):
         return
-    detail = MODEL_LOAD_STATUS.get("url_model_error", "") or "URL model artifacts are missing or failed to load."
+    detail = MODEL_LOAD_STATUS.get("url_model_error", "") or (
+        f"v1={MODEL_LOAD_STATUS.get('url_v1_error', '') or 'n/a'}; "
+        f"v2={MODEL_LOAD_STATUS.get('url_v2_error', '') or 'n/a'}"
+    )
     raise HTTPException(status_code=503, detail=f"URL model unavailable: {detail}")
 
 

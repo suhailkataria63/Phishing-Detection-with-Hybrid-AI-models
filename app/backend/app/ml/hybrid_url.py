@@ -123,12 +123,41 @@ class HybridURLModel:
         self.v2 = URLModelV2Ngrams()
         self.w1 = w1
         self.w2 = w2
+        self.v1_loaded = False
+        self.v2_loaded = False
+        self.v1_error = ""
+        self.v2_error = ""
 
     def load(self):
-        self.v1.load()
-        self.v2.load()
+        self.v1_loaded = False
+        self.v2_loaded = False
+        self.v1_error = ""
+        self.v2_error = ""
+
+        try:
+            self.v1.load()
+            self.v1_loaded = True
+            self.v1_error = ""
+        except Exception as exc:
+            self.v1_loaded = False
+            self.v1_error = str(exc)
+
+        try:
+            self.v2.load()
+            self.v2_loaded = True
+            self.v2_error = ""
+        except Exception as exc:
+            self.v2_loaded = False
+            self.v2_error = str(exc)
+
+    def is_ready(self) -> bool:
+        return bool(self.v1_loaded or self.v2_loaded)
 
     def predict(self, url: str, enable_explain: bool = True):
+        if not self.is_ready():
+            detail = f"v1_error={self.v1_error or 'n/a'}; v2_error={self.v2_error or 'n/a'}"
+            raise RuntimeError(f"No URL sub-models are available ({detail})")
+
         normalized = normalize_url_for_model(url)
         p = safe_parse_url(normalized)
         host = extract_hostname(normalized)
@@ -142,14 +171,42 @@ class HybridURLModel:
         # ---- v1 prediction ----
         # Always compute base reasons so hard/soft cue logic is stable even when
         # explain output is disabled.
-        out_v1 = self.v1.predict(normalized, enable_explain=True)
-        v1_score = float(out_v1.get("probability", 0.0))
-        v1_label = out_v1.get("label", "legitimate")
-        base_reasons = list(out_v1.get("reasons", []))
+        out_v1 = {}
+        v1_score = 0.0
+        v1_label = "legitimate"
+        base_reasons = []
+        if self.v1_loaded:
+            out_v1 = self.v1.predict(normalized, enable_explain=True)
+            v1_score = float(out_v1.get("probability", 0.0))
+            v1_label = out_v1.get("label", "legitimate")
+            base_reasons = list(out_v1.get("reasons", []))
         reasons = list(base_reasons) if enable_explain else []
 
         # ---- v2 prediction ----
-        v2_score = float(self.v2.predict_proba(normalized))
+        v2_score = float(self.v2.predict_proba(normalized)) if self.v2_loaded else 0.0
+
+        # Single-model fallback: if only one sub-model loads, rely on it fully.
+        if self.v1_loaded and not self.v2_loaded:
+            v2_score = v1_score
+            w1, w2 = 1.0, 0.0
+            if enable_explain:
+                reasons.insert(0, {
+                    "feature": "url_model_fallback_v1_only",
+                    "value": {"v1_loaded": True, "v2_loaded": False, "v2_error": self.v2_error},
+                    "note": "String-pattern URL model unavailable; using feature-engineered URL model only.",
+                })
+        elif self.v2_loaded and not self.v1_loaded:
+            v1_score = v2_score
+            v1_label = "phishing" if v2_score >= 0.5 else "legitimate"
+            w1, w2 = 0.0, 1.0
+            if enable_explain:
+                reasons.insert(0, {
+                    "feature": "url_model_fallback_v2_only",
+                    "value": {"v1_loaded": False, "v2_loaded": True, "v1_error": self.v1_error},
+                    "note": "Feature-engineered URL model unavailable; using char-pattern URL model only.",
+                })
+        else:
+            w1, w2 = self.w1, self.w2
 
         # ---- Determine hard cues ONCE ----
         HARD_CUES = {
@@ -164,7 +221,6 @@ class HybridURLModel:
         has_hard_cue = any(r.get("feature") in HARD_CUES for r in base_reasons)
 
         # ---- Guardrail weights ----
-        w1, w2 = self.w1, self.w2
         if is_trusted and looks_docs:
             w1, w2 = 0.85, 0.15
             if enable_explain:
@@ -197,12 +253,12 @@ class HybridURLModel:
         final_score = (w1 * v1_score) + (w2 * v2_score)
 
         # ---- v2 can force phishing only with hard cue OR untrusted ----
-        force_by_v2 = (v2_score >= 0.985) and (has_hard_cue or not is_trusted)
+        force_by_v2 = self.v2_loaded and (v2_score >= 0.985) and (has_hard_cue or not is_trusted)
 
         # ---- Initial decision ----
         if force_by_v2:
             label = "phishing"
-        elif v1_label == "phishing" and has_hard_cue and not is_trusted:
+        elif self.v1_loaded and v1_label == "phishing" and has_hard_cue and not is_trusted:
             # v1 allowed to force phishing only with hard cues, and only when untrusted
             label = "phishing"
         else:
@@ -338,5 +394,9 @@ class HybridURLModel:
                 "has_hard_cue": has_hard_cue,
                 "v1_engine": out_v1.get("meta", {}).get("engine", "url_model_v1"),
                 "v2_engine": getattr(self.v2, "version", "url_model_v2_ngrams"),
+                "v1_loaded": self.v1_loaded,
+                "v2_loaded": self.v2_loaded,
+                "v1_error": self.v1_error,
+                "v2_error": self.v2_error,
             },
         }
