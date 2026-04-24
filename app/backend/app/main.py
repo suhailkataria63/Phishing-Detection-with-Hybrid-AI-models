@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -40,11 +42,21 @@ from .utils.joint_scoring import combine_email_url_scores, risk_level_from_score
 app = FastAPI(title=settings.app_name)
 url_model = HybridURLModel()
 email_model = EmailModel()
+logger = logging.getLogger("phish_detector.startup")
 MODEL_LOAD_STATUS = {
     "url_model_loaded": False,
     "email_model_loaded": False,
     "url_model_error": "",
     "email_model_error": "",
+}
+
+MODEL_PATHS = {
+    "url_v1_model": URL_V1_MODEL_PATH,
+    "url_v1_schema": URL_V1_SCHEMA_PATH,
+    "url_v2_model": URL_V2_MODEL_PATH,
+    "email_model": EMAIL_MODEL_PATH,
+    "email_tokenizer": EMAIL_TOKENIZER_PATH,
+    "email_meta": EMAIL_META_PATH,
 }
 OPERATING_MODE_THRESHOLDS = {
     "soc": 0.40,
@@ -77,42 +89,49 @@ def health():
         "email_model_ready": email_ready,
         "url_model_error": MODEL_LOAD_STATUS.get("url_model_error", ""),
         "email_model_error": MODEL_LOAD_STATUS.get("email_model_error", ""),
-        "model_paths": {
-            "url_v1_model": str(URL_V1_MODEL_PATH),
-            "url_v1_schema": str(URL_V1_SCHEMA_PATH),
-            "url_v2_model": str(URL_V2_MODEL_PATH),
-            "email_model": str(EMAIL_MODEL_PATH),
-            "email_tokenizer": str(EMAIL_TOKENIZER_PATH),
-            "email_meta": str(EMAIL_META_PATH),
-        },
-        "model_paths_exist": {
-            "url_v1_model": URL_V1_MODEL_PATH.exists(),
-            "url_v1_schema": URL_V1_SCHEMA_PATH.exists(),
-            "url_v2_model": URL_V2_MODEL_PATH.exists(),
-            "email_model": EMAIL_MODEL_PATH.exists(),
-            "email_tokenizer": EMAIL_TOKENIZER_PATH.exists(),
-            "email_meta": EMAIL_META_PATH.exists(),
-        },
+        "model_paths": {name: str(path) for name, path in MODEL_PATHS.items()},
+        "model_paths_exist": {name: path.exists() for name, path in MODEL_PATHS.items()},
     }
+
+
+def _log_model_path_status() -> None:
+    for name, path in MODEL_PATHS.items():
+        logger.info("model_path_check name=%s path=%s exists=%s", name, path, path.exists())
 
 
 @app.on_event("startup")
 def startup_event():
+    _log_model_path_status()
+
     try:
+        logger.info("loading_model name=url_hybrid")
         url_model.load()
         MODEL_LOAD_STATUS["url_model_loaded"] = True
         MODEL_LOAD_STATUS["url_model_error"] = ""
+        logger.info("loading_model_success name=url_hybrid")
     except Exception as exc:
         MODEL_LOAD_STATUS["url_model_loaded"] = False
         MODEL_LOAD_STATUS["url_model_error"] = str(exc)
+        logger.exception("loading_model_failed name=url_hybrid error=%s", exc)
 
     try:
+        logger.info("loading_model name=email_model")
         email_model.load()
         MODEL_LOAD_STATUS["email_model_loaded"] = bool(email_model.is_ready)
-        MODEL_LOAD_STATUS["email_model_error"] = ""
+        if email_model.is_ready:
+            MODEL_LOAD_STATUS["email_model_error"] = ""
+            logger.info("loading_model_success name=email_model")
+        else:
+            MODEL_LOAD_STATUS["email_model_error"] = str(email_model.meta.get("error", "email model not ready"))
+            logger.warning(
+                "loading_model_partial name=email_model ready=%s meta_status=%s",
+                email_model.is_ready,
+                email_model.meta.get("status"),
+            )
     except Exception as exc:
         MODEL_LOAD_STATUS["email_model_loaded"] = False
         MODEL_LOAD_STATUS["email_model_error"] = str(exc)
+        logger.exception("loading_model_failed name=email_model error=%s", exc)
 
 
 def _ensure_url_model_ready() -> None:

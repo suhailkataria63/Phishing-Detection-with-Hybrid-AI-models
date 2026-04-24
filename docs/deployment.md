@@ -9,6 +9,7 @@
 Create a **Web Service** from this repo.
 
 - Runtime: `Python`
+- Python version: `3.11.9` (via root `runtime.txt`)
 - Build command:
 ```bash
 pip install -r requirements.txt
@@ -23,6 +24,11 @@ uvicorn app.backend.app.main:app --host 0.0.0.0 --port $PORT
 ```
 
 Render config is included in [`render.yaml`](../render.yaml).
+
+### Dependency Stability Note
+`requirements.txt` is intentionally version-pinned for ML artifact compatibility.
+Using very new major versions of NumPy/Pandas/scikit-learn/Transformers/Torch can break
+serialized model artifacts or runtime loading behavior.
 
 ### Required Render Environment Variables
 - `CORS_ORIGINS`
@@ -118,5 +124,6 @@ curl http://localhost:8000/health
 - `url_model_loaded`
 - `email_model_ready`
 - model path existence diagnostics
+- model load errors (if artifacts are missing or incompatible)
 
 If artifacts are missing in deployment, API still boots and `/health` shows missing-path details for troubleshooting.
