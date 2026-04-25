@@ -286,7 +286,8 @@ class EmailModel:
                 input_ids=enc["input_ids"].to(self.device),
                 attention_mask=enc["attention_mask"].to(self.device),
             )
-            score = float(torch.sigmoid(logits).detach().cpu().numpy()[0])
+            # Avoid NumPy dependency at inference-time tensor conversion.
+            score = float(torch.sigmoid(logits).detach().cpu().item())
 
         reasons: List[Dict[str, Any]] = []
         merged_urls = dedupe_preserve_order([*(payload.urls or []), *extract_urls_from_text(payload.body or "")])
