@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "http://localhost:3000"
     cors_origins: str = ""
     frontend_origin: str = ""
+    deployment_allow_all_cors: bool = False
 
     @property
     def resolved_cors_origins(self) -> list[str]:

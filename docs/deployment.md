@@ -138,3 +138,61 @@ curl http://localhost:8000/health
 - model load errors (if artifacts are missing or incompatible)
 
 If artifacts are missing in deployment, API still boots and `/health` shows missing-path details for troubleshooting.
+
+## 9) Hugging Face Spaces Backend Deployment
+Use Hugging Face Spaces when you want to host full backend inference in a Docker runtime.
+
+### Create Space
+1. Create a new Space in Hugging Face.
+2. Select **SDK: Docker**.
+3. Connect this repository (or push this repo contents to the Space repo).
+
+### Docker Runtime
+This repo includes:
+- `Dockerfile` (root)
+- `requirements-hf.txt` (HF-specific dependency set)
+
+Container entrypoint:
+```bash
+uvicorn app.backend.app.main:app --host 0.0.0.0 --port 7860
+```
+
+Port:
+- Exposed and served on `7860`
+
+### Required Space Environment Variables
+- `PORT=7860`
+- `DEPLOYMENT_MODE=full`
+- `CORS_ORIGINS=http://localhost:3000,https://<your-vercel-domain>`
+- `DEPLOYMENT_ALLOW_ALL_CORS=true` (recommended only for initial testing)
+
+Optional:
+- `FRONTEND_ORIGIN=https://<your-vercel-domain>`
+
+### Health URL
+After deploy, check:
+```text
+https://<your-space-subdomain>.hf.space/health
+```
+
+### Frontend (Vercel) API Base
+Set in Vercel:
+```text
+NEXT_PUBLIC_API_BASE=https://<your-space-subdomain>.hf.space
+```
+
+### Important Compatibility Note
+`requirements-hf.txt` intentionally uses `numpy==1.26.4` with `torch==2.2.2` for Docker stability.
+If model artifacts were serialized with different `scikit-learn`/`joblib` versions, URL model loading can fail.
+The backend is designed to start anyway and expose exact load errors in `/health` diagnostics.
+
+### Quick Local Smoke Check
+```bash
+python scripts/smoke_load_models.py
+```
+
+This validates:
+- backend import
+- URL model load status
+- email model load status
+- `/health` diagnostics snapshot
