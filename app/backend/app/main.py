@@ -51,6 +51,9 @@ MODEL_LOAD_STATUS = {
     "url_model_error": "",
     "url_v1_error": "",
     "url_v2_error": "",
+    "url_last_predict_error": "",
+    "url_last_v1_predict_error": "",
+    "url_last_v2_predict_error": "",
     "email_model_error": "",
 }
 
@@ -99,6 +102,9 @@ def health():
     MODEL_LOAD_STATUS["url_v2_loaded"] = bool(v2_ready)
     MODEL_LOAD_STATUS["url_v1_error"] = str(getattr(url_model, "v1_error", ""))
     MODEL_LOAD_STATUS["url_v2_error"] = str(getattr(url_model, "v2_error", ""))
+    MODEL_LOAD_STATUS["url_last_predict_error"] = str(getattr(url_model, "last_predict_error", ""))
+    MODEL_LOAD_STATUS["url_last_v1_predict_error"] = str(getattr(url_model, "last_v1_predict_error", ""))
+    MODEL_LOAD_STATUS["url_last_v2_predict_error"] = str(getattr(url_model, "last_v2_predict_error", ""))
     MODEL_LOAD_STATUS["email_model_loaded"] = email_ready
 
     return {
@@ -111,6 +117,9 @@ def health():
         "url_model_error": MODEL_LOAD_STATUS.get("url_model_error", ""),
         "url_v1_error": MODEL_LOAD_STATUS.get("url_v1_error", ""),
         "url_v2_error": MODEL_LOAD_STATUS.get("url_v2_error", ""),
+        "url_last_predict_error": MODEL_LOAD_STATUS.get("url_last_predict_error", ""),
+        "url_last_v1_predict_error": MODEL_LOAD_STATUS.get("url_last_v1_predict_error", ""),
+        "url_last_v2_predict_error": MODEL_LOAD_STATUS.get("url_last_v2_predict_error", ""),
         "email_model_error": MODEL_LOAD_STATUS.get("email_model_error", ""),
         "model_paths": {name: str(path) for name, path in MODEL_PATHS.items()},
         "model_paths_exist": {name: path.exists() for name, path in MODEL_PATHS.items()},
@@ -198,14 +207,28 @@ def _ensure_url_model_ready() -> None:
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     _ensure_url_model_ready()
-    return url_model.predict(req.url, enable_explain=req.enable_explain)
+    try:
+        return url_model.predict(req.url, enable_explain=req.enable_explain)
+    except RuntimeError as exc:
+        logger.exception("url_predict_failed endpoint=/predict url=%s error=%s", req.url, exc)
+        MODEL_LOAD_STATUS["url_last_predict_error"] = str(exc)
+        MODEL_LOAD_STATUS["url_last_v1_predict_error"] = str(getattr(url_model, "last_v1_predict_error", ""))
+        MODEL_LOAD_STATUS["url_last_v2_predict_error"] = str(getattr(url_model, "last_v2_predict_error", ""))
+        raise HTTPException(status_code=503, detail=f"URL prediction unavailable: {exc}") from exc
 
 
 # New explicit URL endpoint.
 @app.post("/detect/url", response_model=PredictResponse)
 def detect_url(req: PredictRequest):
     _ensure_url_model_ready()
-    return url_model.predict(req.url, enable_explain=req.enable_explain)
+    try:
+        return url_model.predict(req.url, enable_explain=req.enable_explain)
+    except RuntimeError as exc:
+        logger.exception("url_predict_failed endpoint=/detect/url url=%s error=%s", req.url, exc)
+        MODEL_LOAD_STATUS["url_last_predict_error"] = str(exc)
+        MODEL_LOAD_STATUS["url_last_v1_predict_error"] = str(getattr(url_model, "last_v1_predict_error", ""))
+        MODEL_LOAD_STATUS["url_last_v2_predict_error"] = str(getattr(url_model, "last_v2_predict_error", ""))
+        raise HTTPException(status_code=503, detail=f"URL prediction unavailable: {exc}") from exc
 
 
 def _ensure_email_input(subject: str, body: str) -> None:

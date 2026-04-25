@@ -1,3 +1,4 @@
+import logging
 import re
 
 from .url_model import URLModelV1, normalize_url_for_model
@@ -10,6 +11,8 @@ from ..utils.domain_utils import (
     host_matches_trusted,
 )
 from ..utils.url_utils import extract_hostname, is_ip_host, safe_parse_url
+
+logger = logging.getLogger("phish_detector.url_predict")
 
 
 # ---- Guardrails (rules-first hybrid AI) ----
@@ -127,12 +130,18 @@ class HybridURLModel:
         self.v2_loaded = False
         self.v1_error = ""
         self.v2_error = ""
+        self.last_v1_predict_error = ""
+        self.last_v2_predict_error = ""
+        self.last_predict_error = ""
 
     def load(self):
         self.v1_loaded = False
         self.v2_loaded = False
         self.v1_error = ""
         self.v2_error = ""
+        self.last_v1_predict_error = ""
+        self.last_v2_predict_error = ""
+        self.last_predict_error = ""
 
         try:
             self.v1.load()
@@ -154,8 +163,13 @@ class HybridURLModel:
         return bool(self.v1_loaded or self.v2_loaded)
 
     def predict(self, url: str, enable_explain: bool = True):
+        self.last_v1_predict_error = ""
+        self.last_v2_predict_error = ""
+        self.last_predict_error = ""
+
         if not self.is_ready():
             detail = f"v1_error={self.v1_error or 'n/a'}; v2_error={self.v2_error or 'n/a'}"
+            self.last_predict_error = detail
             raise RuntimeError(f"No URL sub-models are available ({detail})")
 
         normalized = normalize_url_for_model(url)
@@ -175,35 +189,65 @@ class HybridURLModel:
         v1_score = 0.0
         v1_label = "legitimate"
         base_reasons = []
+        v1_runtime_ready = False
         if self.v1_loaded:
-            out_v1 = self.v1.predict(normalized, enable_explain=True)
-            v1_score = float(out_v1.get("probability", 0.0))
-            v1_label = out_v1.get("label", "legitimate")
-            base_reasons = list(out_v1.get("reasons", []))
+            try:
+                out_v1 = self.v1.predict(normalized, enable_explain=True)
+                v1_score = float(out_v1.get("probability", 0.0))
+                v1_label = out_v1.get("label", "legitimate")
+                base_reasons = list(out_v1.get("reasons", []))
+                v1_runtime_ready = True
+            except Exception as exc:
+                self.last_v1_predict_error = str(exc)
+                logger.exception("url_v1_predict_failed host=%s url=%s error=%s", host, normalized, exc)
         reasons = list(base_reasons) if enable_explain else []
 
         # ---- v2 prediction ----
-        v2_score = float(self.v2.predict_proba(normalized)) if self.v2_loaded else 0.0
+        v2_score = 0.0
+        v2_runtime_ready = False
+        if self.v2_loaded:
+            try:
+                v2_score = float(self.v2.predict_proba(normalized))
+                v2_runtime_ready = True
+            except Exception as exc:
+                self.last_v2_predict_error = str(exc)
+                logger.exception("url_v2_predict_failed host=%s url=%s error=%s", host, normalized, exc)
+
+        if not (v1_runtime_ready or v2_runtime_ready):
+            detail = (
+                f"v1_predict_error={self.last_v1_predict_error or self.v1_error or 'n/a'}; "
+                f"v2_predict_error={self.last_v2_predict_error or self.v2_error or 'n/a'}"
+            )
+            self.last_predict_error = detail
+            raise RuntimeError(f"URL prediction unavailable ({detail})")
 
         # Single-model fallback: if only one sub-model loads, rely on it fully.
-        if self.v1_loaded and not self.v2_loaded:
+        if v1_runtime_ready and not v2_runtime_ready:
             v2_score = v1_score
             w1, w2 = 1.0, 0.0
             if enable_explain:
                 reasons.insert(0, {
                     "feature": "url_model_fallback_v1_only",
-                    "value": {"v1_loaded": True, "v2_loaded": False, "v2_error": self.v2_error},
-                    "note": "String-pattern URL model unavailable; using feature-engineered URL model only.",
+                    "value": {
+                        "v1_loaded": self.v1_loaded,
+                        "v2_loaded": self.v2_loaded,
+                        "v2_predict_error": self.last_v2_predict_error or self.v2_error,
+                    },
+                    "note": "String-pattern URL model unavailable for this request; using feature-engineered URL model only.",
                 })
-        elif self.v2_loaded and not self.v1_loaded:
+        elif v2_runtime_ready and not v1_runtime_ready:
             v1_score = v2_score
             v1_label = "phishing" if v2_score >= 0.5 else "legitimate"
             w1, w2 = 0.0, 1.0
             if enable_explain:
                 reasons.insert(0, {
                     "feature": "url_model_fallback_v2_only",
-                    "value": {"v1_loaded": False, "v2_loaded": True, "v1_error": self.v1_error},
-                    "note": "Feature-engineered URL model unavailable; using char-pattern URL model only.",
+                    "value": {
+                        "v1_loaded": self.v1_loaded,
+                        "v2_loaded": self.v2_loaded,
+                        "v1_predict_error": self.last_v1_predict_error or self.v1_error,
+                    },
+                    "note": "Feature-engineered URL model unavailable for this request; using char-pattern URL model only.",
                 })
         else:
             w1, w2 = self.w1, self.w2
@@ -253,12 +297,12 @@ class HybridURLModel:
         final_score = (w1 * v1_score) + (w2 * v2_score)
 
         # ---- v2 can force phishing only with hard cue OR untrusted ----
-        force_by_v2 = self.v2_loaded and (v2_score >= 0.985) and (has_hard_cue or not is_trusted)
+        force_by_v2 = v2_runtime_ready and (v2_score >= 0.985) and (has_hard_cue or not is_trusted)
 
         # ---- Initial decision ----
         if force_by_v2:
             label = "phishing"
-        elif self.v1_loaded and v1_label == "phishing" and has_hard_cue and not is_trusted:
+        elif v1_runtime_ready and v1_label == "phishing" and has_hard_cue and not is_trusted:
             # v1 allowed to force phishing only with hard cues, and only when untrusted
             label = "phishing"
         else:
@@ -398,5 +442,8 @@ class HybridURLModel:
                 "v2_loaded": self.v2_loaded,
                 "v1_error": self.v1_error,
                 "v2_error": self.v2_error,
+                "last_v1_predict_error": self.last_v1_predict_error,
+                "last_v2_predict_error": self.last_v2_predict_error,
+                "last_predict_error": self.last_predict_error,
             },
         }
