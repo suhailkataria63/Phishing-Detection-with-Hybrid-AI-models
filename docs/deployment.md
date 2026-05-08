@@ -182,9 +182,23 @@ NEXT_PUBLIC_API_BASE=https://<your-space-subdomain>.hf.space
 ```
 
 ### Important Compatibility Note
-`requirements-hf.txt` intentionally uses `numpy==1.26.4` with `torch==2.2.2` for Docker stability.
-If model artifacts were serialized with different `scikit-learn`/`joblib` versions, URL model loading can fail.
-The backend is designed to start anyway and expose exact load errors in `/health` diagnostics.
+`requirements-hf.txt` is aligned to URL artifact serialization versions:
+- `scikit-learn==1.8.0`
+- `joblib==1.5.3`
+- `numpy==2.4.4`
+
+This avoids runtime crashes such as:
+- `AttributeError: 'LogisticRegression' object has no attribute 'multi_class'`
+
+CPU torch is pinned via:
+- `torch==2.2.2+cpu`
+- `--extra-index-url https://download.pytorch.org/whl/cpu`
+
+If the email transformer stack has incompatibilities with `numpy==2.x` on a given build image, backend startup still continues and `/health` exposes exact email model load errors while URL detection remains available.
+URL prediction runtime errors are also surfaced in `/health` under:
+- `url_last_predict_error`
+- `url_last_v1_predict_error`
+- `url_last_v2_predict_error`
 
 ### Quick Local Smoke Check
 ```bash
