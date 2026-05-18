@@ -41,8 +41,9 @@ phish-detector/
 │   ├── run_email_pipeline.py   # compact launcher
 │   ├── run_url_pipeline.py     # compact launcher
 │   ├── run_joint_pipeline.py   # compact launcher
+│   ├── smoke_load_models.py    # deployment/runtime smoke check
 │   ├── README.md
-│   └── legacy/                 # relocated old one-file wrappers
+│   └── (no legacy wrappers)    # legacy wrappers moved to archive/
 ├── docs/
 │   ├── architecture/
 │   ├── experiments/
@@ -98,5 +99,5 @@ phish-detector/
 - Archived/superseded reports: `reports/archive/*`
 
 ## Compatibility Notes
-- Old wrapper commands were relocated from `scripts/*.py` to `scripts/legacy/` to reduce explorer clutter.
+- Old wrapper commands were relocated from `scripts/*.py` to `archive/old_scripts/scripts_legacy/` to reduce explorer clutter.
 - Existing backend/frontend commands still work via root symlinks.

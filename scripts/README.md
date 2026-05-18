@@ -6,9 +6,10 @@ This folder is intentionally minimal.
 - `python scripts/run_email_pipeline.py <task>`
 - `python scripts/run_url_pipeline.py <mode> [task]`
 - `python scripts/run_joint_pipeline.py <mode>`
+- `python scripts/smoke_load_models.py`
 
 Primary active entrypoints remain under `pipelines/`.
 
 ## Legacy wrappers
-Previous one-file wrapper commands were moved to `scripts/legacy/` to reduce explorer clutter.
+Previous one-file wrapper commands were moved to `archive/old_scripts/scripts_legacy/` to reduce explorer clutter.
 Use `pipelines/*` directly for current workflows.

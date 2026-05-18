@@ -1,19 +1,79 @@
-Advanced Phishing Detection using hybrid AI models - concept : We’ll build a system that takes a URL (and optionally page content/email text) and predicts: -Phishing (malicious / fake login / credential theft) -Legitimate We’ll use a hybrid approach: -URL-based signals (fast, works even if website blocks us) -Domain/host signals (WHOIS age, HTTPS, redirects, etc. if available) -Content/NLP signals (optional but impressive: page title/text patterns) Then we’ll combine these signals with: -Traditional ML (Random Forest / XGBoost / Logistic Regression) -and optionally a light Deep Learning classifier for text/content (if we include it) datasets : -PhiUSIIL Phishing URL Dataset (tabular, large, modern; UCI + Kaggle mirrors). -phishtank_online_valid(phishing URLs) -top-1m.csv(tranco dataset for legitmate URls) -UCI Phishing Websites dataset (classic features; good for comparison/baselines). -Kaggle “phishing and legitimate urls” style datasets for quick prototyping. repo base : phish-detector/
+# Phishing Detection with Hybrid AI Models
 
-## Deployment (Render + Vercel)
-- Backend (Render): FastAPI service using `uvicorn app.backend.app.main:app --host 0.0.0.0 --port $PORT`
-- Frontend (Vercel): Next.js app with Root Directory `app/frontend`
-- Frontend env var: `NEXT_PUBLIC_API_BASE=https://<your-render-service>.onrender.com`
+Advanced phishing detection system that predicts whether an input is:
+- `phishing` (malicious / fake login / credential theft)
+- `legitimate`
 
-Local run:
+The system supports three detection modes:
+- URL Detection
+- Email Detection
+- Joint Detection (Email + URL)
+
+## Concept
+We use a hybrid strategy so detection remains strong even when one signal is weak.
+
+Signal layers:
+- URL-based signals: lexical patterns, suspicious paths, typosquat/lookalike cues
+- Domain/host signals: trusted-domain checks, IP-host detection, redirect/lure patterns
+- Content/NLP signals: email-text classifier and language cues
+
+Model layers:
+- Traditional ML models for URL and engineered features
+- Transformer-based email classifier (DistilBERT text-only frozen encoder)
+- Rule-assisted ensemble logic for transparent joint scoring
+
+## Dataset Sources
+URL-side datasets used/planned:
+- PhiUSIIL Phishing URL Dataset (modern tabular URL features)
+- `phishtank_online_valid.json` (phishing URLs)
+- `top-1m.csv` (Tranco top domains for legitimate/reputable reference)
+- UCI Phishing Websites dataset (baseline comparison)
+- Kaggle phishing vs legitimate URL datasets (rapid prototyping/augmentation)
+
+Email-side datasets used:
+- Enron (`data/raw/enron/emails.csv`)
+- Nazario (`data/raw/nazario/nazario.csv`)
+- SpamAssassin archives (`data/raw/spamassassin/*.tar.bz2`)
+
+## Repository Base
+```text
+phish-detector/
+```
+
+Key paths:
+- Backend: `app/backend`
+- Frontend: `app/frontend`
+- Data: `data/`
+- Models: `models/`
+- Pipelines: `pipelines/`
+- Reports: `reports/`
+- Docs: `docs/`
+
+## Current Product Capabilities
+- URL phishing inference with explainable reasons
+- Email phishing inference with calibrated risk scoring
+- Joint email+URL inference with strategy selection (`baseline` / `optimized`)
+- Batch-style analysis datasets and evaluation tooling
+- Health diagnostics for model availability and load errors
+
+## Local Run
+Backend:
 ```bash
-# backend
+cd /path/to/phish-detector
 uvicorn app.backend.app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-# frontend (new terminal)
-cd app/frontend
+Frontend:
+```bash
+cd /path/to/phish-detector/app/frontend
 npm install
 NEXT_PUBLIC_API_BASE=http://localhost:8000 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Detailed deployment steps: [`docs/deployment.md`](docs/deployment.md)
+## Deployment
+- Render + Vercel setup details: [`docs/deployment.md`](docs/deployment.md)
+- Hugging Face Spaces (Docker) backend deployment is also documented there.
+
+## Notes
+- This project is intentionally explainability-focused for analyst workflows.
+- Joint detection is designed to be transparent, with rule metadata surfaced in responses.

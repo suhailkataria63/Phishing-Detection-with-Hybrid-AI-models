@@ -17,6 +17,8 @@ Moved to `archive/deprecated_artifacts/`:
 ### Wrapper minimization
 - 19 thin compatibility wrappers were moved from `scripts/*.py` to `scripts/legacy/`.
 - `scripts/` now keeps only compact launchers and a local README.
+- In a second cleanup pass, those `scripts/legacy/*.py` wrappers were moved to
+  `archive/old_scripts/scripts_legacy/` so `scripts/` stays focused on active utilities.
 
 ## Why It Was Moved
 - Reduce top-level clutter and keep active runtime/pipeline files easy to find.
@@ -31,4 +33,4 @@ Moved to `archive/deprecated_artifacts/`:
 
 ## Compatibility
 - Existing commands using `backend/` and `frontend/` continue to work via symlinks.
-- Old script wrappers are preserved under `scripts/legacy/` for manual fallback.
+- Old script wrappers are preserved under `archive/old_scripts/scripts_legacy/` for manual fallback.
